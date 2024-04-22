@@ -575,6 +575,7 @@ core_deps = [
   gum_dep,
   gumjs_inspector_dep,
   tls_provider_dep,
+  lwip_dep,
 ]
 core_deps += backend_deps
 core_deps += backend_deps_private
