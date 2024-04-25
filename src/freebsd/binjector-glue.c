@@ -1289,40 +1289,40 @@ frida_inject_instance_emit_payload_code (const FridaInjectParams * params, GumAd
 #elif defined (HAVE_ARM64)
 
 #define EMIT_MOVE(dst, src) \
-    gum_arm64_writer_put_mov_reg_reg (&cw, ARM64_REG_##dst, ARM64_REG_##src)
+    gum_arm64_writer_put_mov_reg_reg (&cw, AArch64_##dst, AArch64_##src)
 #define EMIT_ADD(dst, src, offset) \
-    gum_arm64_writer_put_add_reg_reg_imm (&cw, ARM64_REG_##dst, ARM64_REG_##src, offset)
+    gum_arm64_writer_put_add_reg_reg_imm (&cw, AArch64_##dst, AArch64_##src, offset)
 #define EMIT_PUSH(a, b) \
-    gum_arm64_writer_put_push_reg_reg (&cw, ARM64_REG_##a, ARM64_REG_##b)
+    gum_arm64_writer_put_push_reg_reg (&cw, AArch64_##a, AArch64_##b)
 #define EMIT_POP(a, b) \
-    gum_arm64_writer_put_pop_reg_reg (&cw, ARM64_REG_##a, ARM64_REG_##b)
+    gum_arm64_writer_put_pop_reg_reg (&cw, AArch64_##a, AArch64_##b)
 #define EMIT_LOAD_FIELD(reg, field) \
-    gum_arm64_writer_put_ldr_reg_reg_offset (&cw, ARM64_REG_##reg, ARM64_REG_X20, G_STRUCT_OFFSET (FridaTrampolineData, field))
+    gum_arm64_writer_put_ldr_reg_reg_offset (&cw, AArch64_##reg, AArch64_X20, G_STRUCT_OFFSET (FridaTrampolineData, field))
 #define EMIT_STORE_FIELD(field, reg) \
-    gum_arm64_writer_put_str_reg_reg_offset (&cw, ARM64_REG_##reg, ARM64_REG_X20, G_STRUCT_OFFSET (FridaTrampolineData, field))
+    gum_arm64_writer_put_str_reg_reg_offset (&cw, AArch64_##reg, AArch64_X20, G_STRUCT_OFFSET (FridaTrampolineData, field))
 #define EMIT_LDR(dst, src, offset) \
-    gum_arm64_writer_put_ldr_reg_reg_offset (&cw, ARM64_REG_##dst, ARM64_REG_##src, offset)
+    gum_arm64_writer_put_ldr_reg_reg_offset (&cw, AArch64_##dst, AArch64_##src, offset)
 #define EMIT_LDR_ADDRESS(reg, value) \
-    gum_arm64_writer_put_ldr_reg_address (&cw, ARM64_REG_##reg, value)
+    gum_arm64_writer_put_ldr_reg_address (&cw, AArch64_##reg, value)
 #define EMIT_LDR_U64(reg, value) \
-    gum_arm64_writer_put_ldr_reg_u64 (&cw, ARM64_REG_##reg, value)
+    gum_arm64_writer_put_ldr_reg_u64 (&cw, AArch64_##reg, value)
 #define EMIT_CALL_IMM(func, n_args, ...) \
     gum_arm64_writer_put_call_address_with_arguments (&cw, func, n_args, __VA_ARGS__)
 #define EMIT_CALL_REG(reg, n_args, ...) \
-    gum_arm64_writer_put_call_reg_with_arguments (&cw, ARM64_REG_##reg, n_args, __VA_ARGS__)
+    gum_arm64_writer_put_call_reg_with_arguments (&cw, AArch64_##reg, n_args, __VA_ARGS__)
 #define EMIT_RET() \
     gum_arm64_writer_put_ret (&cw)
 #define EMIT_LABEL(name) \
     gum_arm64_writer_put_label (&cw, name)
 #define EMIT_CBNZ(reg, label) \
-    gum_arm64_writer_put_cbnz_reg_label (&cw, ARM64_REG_##reg, label)
+    gum_arm64_writer_put_cbnz_reg_label (&cw, AArch64_##reg, label)
 #define EMIT_CMP(a, b) \
-    gum_arm64_writer_put_cmp_reg_reg (&cw, ARM64_REG_##a, ARM64_REG_##b)
+    gum_arm64_writer_put_cmp_reg_reg (&cw, AArch64_##a, AArch64_##b)
 #define EMIT_B_COND(cond, label) \
     gum_arm64_writer_put_b_cond_label (&cw, ARM64_CC_##cond, label)
 
 #define ARG_REG(reg) \
-    GUM_ARG_REGISTER, ARM64_REG_##reg
+    GUM_ARG_REGISTER, AArch64_##reg
 
 static void
 frida_inject_instance_commit_arm64_code (GumArm64Writer * cw, FridaCodeChunk * code)
@@ -1460,7 +1460,7 @@ frida_inject_instance_emit_payload_code (const FridaInjectParams * params, GumAd
       2,
       ARG_REG (X0),
       ARG_IMM (FRIDA_REMOTE_DATA_FIELD (pthread_getthreadid_np_string)));
-  gum_arm64_writer_put_blr_reg (&cw, ARM64_REG_X0);
+  gum_arm64_writer_put_blr_reg (&cw, AArch64_X0);
   EMIT_MOVE (W23, W0);
 
   EMIT_LOAD_FIELD (X0, pthread_so);

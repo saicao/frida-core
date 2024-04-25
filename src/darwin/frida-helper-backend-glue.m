@@ -4825,14 +4825,14 @@ frida_agent_context_emit_arm64_mach_stub_code (FridaAgentContext * self, guint8 
 
   ctx.aw.ptrauth_support = resolver->ptrauth_support;
 
-  gum_arm64_writer_put_push_reg_reg (&ctx.aw, ARM64_REG_FP, ARM64_REG_LR);
-  gum_arm64_writer_put_mov_reg_reg (&ctx.aw, ARM64_REG_FP, ARM64_REG_SP);
-  gum_arm64_writer_put_push_reg_reg (&ctx.aw, ARM64_REG_X19, ARM64_REG_X20);
-  gum_arm64_writer_put_push_reg_reg (&ctx.aw, ARM64_REG_X21, ARM64_REG_X22);
+  gum_arm64_writer_put_push_reg_reg (&ctx.aw, AArch64_REG_FP, AArch64_REG_LR);
+  gum_arm64_writer_put_mov_reg_reg (&ctx.aw, AArch64_REG_FP, AArch64_REG_SP);
+  gum_arm64_writer_put_push_reg_reg (&ctx.aw, AArch64_REG_X19, AArch64_REG_X20);
+  gum_arm64_writer_put_push_reg_reg (&ctx.aw, AArch64_REG_X21, AArch64_REG_X22);
   frida_agent_context_emit_arm64_mach_stub_body (self, &ctx);
-  gum_arm64_writer_put_pop_reg_reg (&ctx.aw, ARM64_REG_X21, ARM64_REG_X22);
-  gum_arm64_writer_put_pop_reg_reg (&ctx.aw, ARM64_REG_X19, ARM64_REG_X20);
-  gum_arm64_writer_put_pop_reg_reg (&ctx.aw, ARM64_REG_FP, ARM64_REG_LR);
+  gum_arm64_writer_put_pop_reg_reg (&ctx.aw, AArch64_REG_X21, AArch64_REG_X22);
+  gum_arm64_writer_put_pop_reg_reg (&ctx.aw, AArch64_REG_X19, AArch64_REG_X20);
+  gum_arm64_writer_put_pop_reg_reg (&ctx.aw, AArch64_REG_FP, AArch64_REG_LR);
   gum_arm64_writer_put_ret (&ctx.aw);
 
   gum_arm64_writer_clear (&ctx.aw);
@@ -4850,78 +4850,78 @@ frida_agent_context_emit_arm64_pthread_stub_code (FridaAgentContext * self, guin
 
   ctx.aw.ptrauth_support = resolver->ptrauth_support;
 
-  gum_arm64_writer_put_push_reg_reg (&ctx.aw, ARM64_REG_FP, ARM64_REG_LR);
-  gum_arm64_writer_put_mov_reg_reg (&ctx.aw, ARM64_REG_FP, ARM64_REG_SP);
-  gum_arm64_writer_put_push_reg_reg (&ctx.aw, ARM64_REG_X19, ARM64_REG_X20);
-  gum_arm64_writer_put_mov_reg_reg (&ctx.aw, ARM64_REG_X20, ARM64_REG_X0);
+  gum_arm64_writer_put_push_reg_reg (&ctx.aw, AArch64_REG_FP, AArch64_REG_LR);
+  gum_arm64_writer_put_mov_reg_reg (&ctx.aw, AArch64_REG_FP, AArch64_REG_SP);
+  gum_arm64_writer_put_push_reg_reg (&ctx.aw, AArch64_REG_X19, AArch64_REG_X20);
+  gum_arm64_writer_put_mov_reg_reg (&ctx.aw, AArch64_REG_X20, AArch64_REG_X0);
   frida_agent_context_emit_arm64_pthread_stub_body (self, &ctx);
-  gum_arm64_writer_put_pop_reg_reg (&ctx.aw, ARM64_REG_X19, ARM64_REG_X20);
-  gum_arm64_writer_put_pop_reg_reg (&ctx.aw, ARM64_REG_FP, ARM64_REG_LR);
+  gum_arm64_writer_put_pop_reg_reg (&ctx.aw, AArch64_REG_X19, AArch64_REG_X20);
+  gum_arm64_writer_put_pop_reg_reg (&ctx.aw, AArch64_REG_FP, AArch64_REG_LR);
   gum_arm64_writer_put_ret (&ctx.aw);
   gum_arm64_writer_clear (&ctx.aw);
 }
 
-#define EMIT_ARM64_LOAD(reg, field) \
-    gum_arm64_writer_put_ldr_reg_reg_offset (&ctx->aw, ARM64_REG_##reg, ARM64_REG_X20, G_STRUCT_OFFSET (FridaAgentContext, field))
-#define EMIT_ARM64_LOAD_ADDRESS_OF(reg, field) \
-    gum_arm64_writer_put_add_reg_reg_imm (&ctx->aw, ARM64_REG_##reg, ARM64_REG_X20, G_STRUCT_OFFSET (FridaAgentContext, field))
-#define EMIT_ARM64_LOAD_U64(reg, val) \
-    gum_arm64_writer_put_ldr_reg_u64 (&ctx->aw, ARM64_REG_##reg, val)
-#define EMIT_ARM64_STORE(field, reg) \
-    gum_arm64_writer_put_str_reg_reg_offset (&ctx->aw, ARM64_REG_##reg, ARM64_REG_X20, G_STRUCT_OFFSET (FridaAgentContext, field))
-#define EMIT_ARM64_MOVE(dstreg, srcreg) \
-    gum_arm64_writer_put_mov_reg_reg (&ctx->aw, ARM64_REG_##dstreg, ARM64_REG_##srcreg)
-#define EMIT_ARM64_CALL(reg) \
-    gum_arm64_writer_put_blr_reg_no_auth (&ctx->aw, ARM64_REG_##reg)
+#define EMIT_AArch64_LOAD(reg, field) \
+    gum_arm64_writer_put_ldr_reg_reg_offset (&ctx->aw, AArch64_REG_##reg, AArch64_REG_X20, G_STRUCT_OFFSET (FridaAgentContext, field))
+#define EMIT_AArch64_LOAD_ADDRESS_OF(reg, field) \
+    gum_arm64_writer_put_add_reg_reg_imm (&ctx->aw, AArch64_REG_##reg, AArch64_REG_X20, G_STRUCT_OFFSET (FridaAgentContext, field))
+#define EMIT_AArch64_LOAD_U64(reg, val) \
+    gum_arm64_writer_put_ldr_reg_u64 (&ctx->aw, AArch64_REG_##reg, val)
+#define EMIT_AArch64_STORE(field, reg) \
+    gum_arm64_writer_put_str_reg_reg_offset (&ctx->aw, AArch64_REG_##reg, AArch64_REG_X20, G_STRUCT_OFFSET (FridaAgentContext, field))
+#define EMIT_AArch64_MOVE(dstreg, srcreg) \
+    gum_arm64_writer_put_mov_reg_reg (&ctx->aw, AArch64_REG_##dstreg, AArch64_REG_##srcreg)
+#define EMIT_AArch64_CALL(reg) \
+    gum_arm64_writer_put_blr_reg_no_auth (&ctx->aw, AArch64_REG_##reg)
 
 static void
 frida_agent_context_emit_arm64_mach_stub_body (FridaAgentContext * self, FridaAgentEmitContext * ctx)
 {
   const gchar * again = "again";
 
-  EMIT_ARM64_LOAD (X8, mach_task_self_impl);
-  EMIT_ARM64_CALL (X8);
-  EMIT_ARM64_STORE (task, W0);
+  EMIT_AArch64_LOAD (X8, mach_task_self_impl);
+  EMIT_AArch64_CALL (X8);
+  EMIT_AArch64_STORE (task, W0);
 
-  EMIT_ARM64_LOAD (X8, mach_thread_self_impl);
-  EMIT_ARM64_CALL (X8);
-  EMIT_ARM64_STORE (mach_thread, W0);
+  EMIT_AArch64_LOAD (X8, mach_thread_self_impl);
+  EMIT_AArch64_CALL (X8);
+  EMIT_AArch64_STORE (mach_thread, W0);
 
-  EMIT_ARM64_LOAD (W0, task);
-  EMIT_ARM64_LOAD (W1, mach_port_allocate_right);
-  gum_arm64_writer_put_push_reg_reg (&ctx->aw, ARM64_REG_X0, ARM64_REG_X1);
-  EMIT_ARM64_MOVE (X2, SP);
-  EMIT_ARM64_LOAD (X8, mach_port_allocate_impl);
-  EMIT_ARM64_CALL (X8);
-  gum_arm64_writer_put_pop_reg_reg (&ctx->aw, ARM64_REG_X0, ARM64_REG_X1);
-  EMIT_ARM64_STORE (receive_port, W0);
-  EMIT_ARM64_LOAD (X1, message_that_never_arrives);
-  gum_arm64_writer_put_str_reg_reg_offset (&ctx->aw, ARM64_REG_W0, ARM64_REG_X1, G_STRUCT_OFFSET (mach_msg_header_t, msgh_local_port));
+  EMIT_AArch64_LOAD (W0, task);
+  EMIT_AArch64_LOAD (W1, mach_port_allocate_right);
+  gum_arm64_writer_put_push_reg_reg (&ctx->aw, AArch64_REG_X0, AArch64_REG_X1);
+  EMIT_AArch64_MOVE (X2, SP);
+  EMIT_AArch64_LOAD (X8, mach_port_allocate_impl);
+  EMIT_AArch64_CALL (X8);
+  gum_arm64_writer_put_pop_reg_reg (&ctx->aw, AArch64_REG_X0, AArch64_REG_X1);
+  EMIT_AArch64_STORE (receive_port, W0);
+  EMIT_AArch64_LOAD (X1, message_that_never_arrives);
+  gum_arm64_writer_put_str_reg_reg_offset (&ctx->aw, AArch64_REG_W0, AArch64_REG_X1, G_STRUCT_OFFSET (mach_msg_header_t, msgh_local_port));
 
-  gum_arm64_writer_put_push_reg_reg (&ctx->aw, ARM64_REG_X0, ARM64_REG_X1);
-  EMIT_ARM64_MOVE (X0, SP);
+  gum_arm64_writer_put_push_reg_reg (&ctx->aw, AArch64_REG_X0, AArch64_REG_X1);
+  EMIT_AArch64_MOVE (X0, SP);
 
-  EMIT_ARM64_LOAD_U64 (X1, 0);
+  EMIT_AArch64_LOAD_U64 (X1, 0);
 
-  EMIT_ARM64_LOAD (X2, pthread_create_start_routine);
+  EMIT_AArch64_LOAD (X2, pthread_create_start_routine);
   if (ctx->aw.ptrauth_support == GUM_PTRAUTH_SUPPORTED)
   {
     const guint32 paciza_x2 = 0xdac123e2;
     gum_arm64_writer_put_instruction (&ctx->aw, paciza_x2);
   }
 
-  EMIT_ARM64_LOAD (X3, pthread_create_arg);
+  EMIT_AArch64_LOAD (X3, pthread_create_arg);
 
-  EMIT_ARM64_LOAD (X8, pthread_create_impl);
-  EMIT_ARM64_CALL (X8);
+  EMIT_AArch64_LOAD (X8, pthread_create_impl);
+  EMIT_AArch64_CALL (X8);
 
-  gum_arm64_writer_put_pop_reg_reg (&ctx->aw, ARM64_REG_X0, ARM64_REG_X1);
+  gum_arm64_writer_put_pop_reg_reg (&ctx->aw, AArch64_REG_X0, AArch64_REG_X1);
 
   gum_arm64_writer_put_label (&ctx->aw, again);
 
-  EMIT_ARM64_LOAD (X0, message_that_never_arrives);
-  EMIT_ARM64_LOAD (X8, mach_msg_receive_impl);
-  EMIT_ARM64_CALL (X8);
+  EMIT_AArch64_LOAD (X0, message_that_never_arrives);
+  EMIT_AArch64_LOAD (X8, mach_msg_receive_impl);
+  EMIT_AArch64_CALL (X8);
 
   gum_arm64_writer_put_b_label (&ctx->aw, again);
 }
@@ -4934,108 +4934,108 @@ frida_agent_context_emit_arm64_pthread_stub_body (FridaAgentContext * self, Frid
   const gchar * skip_destruction = "skip_destruction";
   const gchar * skip_detach = "skip_detach";
 
-  EMIT_ARM64_LOAD (X8, mach_thread_self_impl);
-  EMIT_ARM64_CALL (X8);
-  EMIT_ARM64_STORE (posix_thread, W0);
+  EMIT_AArch64_LOAD (X8, mach_thread_self_impl);
+  EMIT_AArch64_CALL (X8);
+  EMIT_AArch64_STORE (posix_thread, W0);
 
   if (self->pthread_threadid_np_impl != 0)
   {
-    EMIT_ARM64_LOAD_U64 (X0, 0);
-    EMIT_ARM64_LOAD_ADDRESS_OF (X1, posix_tid);
-    EMIT_ARM64_LOAD (X8, pthread_threadid_np_impl);
-    EMIT_ARM64_CALL (X8);
+    EMIT_AArch64_LOAD_U64 (X0, 0);
+    EMIT_AArch64_LOAD_ADDRESS_OF (X1, posix_tid);
+    EMIT_AArch64_LOAD (X8, pthread_threadid_np_impl);
+    EMIT_AArch64_CALL (X8);
   }
 
-  EMIT_ARM64_LOAD (W0, task);
-  EMIT_ARM64_LOAD (W1, receive_port);
-  EMIT_ARM64_LOAD (X8, mach_port_destroy_impl);
-  EMIT_ARM64_CALL (X8);
+  EMIT_AArch64_LOAD (W0, task);
+  EMIT_AArch64_LOAD (W1, receive_port);
+  EMIT_AArch64_LOAD (X8, mach_port_destroy_impl);
+  EMIT_AArch64_CALL (X8);
 
-  EMIT_ARM64_LOAD (W0, mach_thread);
-  EMIT_ARM64_LOAD (X8, thread_terminate_impl);
-  EMIT_ARM64_CALL (X8);
+  EMIT_AArch64_LOAD (W0, mach_thread);
+  EMIT_AArch64_LOAD (X8, thread_terminate_impl);
+  EMIT_AArch64_CALL (X8);
 
-  EMIT_ARM64_LOAD (X0, mapped_range);
-  gum_arm64_writer_put_push_reg_reg (&ctx->aw, ARM64_REG_X0, ARM64_REG_X1); /* DarwinInjectorState */
+  EMIT_AArch64_LOAD (X0, mapped_range);
+  gum_arm64_writer_put_push_reg_reg (&ctx->aw, AArch64_REG_X0, AArch64_REG_X1); /* DarwinInjectorState */
 
   if (ctx->mapper != NULL)
   {
-    EMIT_ARM64_LOAD (W0, constructed);
-    gum_arm64_writer_put_cbnz_reg_label (&ctx->aw, ARM64_REG_W0, skip_construction);
+    EMIT_AArch64_LOAD (W0, constructed);
+    gum_arm64_writer_put_cbnz_reg_label (&ctx->aw, AArch64_REG_W0, skip_construction);
 
-    gum_arm64_writer_put_ldr_reg_address (&ctx->aw, ARM64_REG_X8,
+    gum_arm64_writer_put_ldr_reg_address (&ctx->aw, AArch64_REG_X8,
         gum_strip_code_address (gum_darwin_mapper_constructor (ctx->mapper)));
-    EMIT_ARM64_CALL (X8);
-    gum_arm64_writer_put_ldr_reg_u64 (&ctx->aw, ARM64_REG_X1, TRUE);
-    EMIT_ARM64_STORE (constructed, W1);
+    EMIT_AArch64_CALL (X8);
+    gum_arm64_writer_put_ldr_reg_u64 (&ctx->aw, AArch64_REG_X1, TRUE);
+    EMIT_AArch64_STORE (constructed, W1);
 
     gum_arm64_writer_put_label (&ctx->aw, skip_construction);
 
-    EMIT_ARM64_LOAD (X0, entrypoint_data);
-    EMIT_ARM64_LOAD_ADDRESS_OF (X1, unload_policy);
-    EMIT_ARM64_MOVE (X2, SP);
-    gum_arm64_writer_put_ldr_reg_address (&ctx->aw, ARM64_REG_X8,
+    EMIT_AArch64_LOAD (X0, entrypoint_data);
+    EMIT_AArch64_LOAD_ADDRESS_OF (X1, unload_policy);
+    EMIT_AArch64_MOVE (X2, SP);
+    gum_arm64_writer_put_ldr_reg_address (&ctx->aw, AArch64_REG_X8,
         gum_strip_code_address (gum_darwin_mapper_resolve (ctx->mapper, self->entrypoint_name_storage)));
-    EMIT_ARM64_CALL (X8);
+    EMIT_AArch64_CALL (X8);
   }
   else
   {
-    EMIT_ARM64_LOAD (X19, module_handle);
-    gum_arm64_writer_put_cbnz_reg_label (&ctx->aw, ARM64_REG_X19, skip_dlopen);
+    EMIT_AArch64_LOAD (X19, module_handle);
+    gum_arm64_writer_put_cbnz_reg_label (&ctx->aw, AArch64_REG_X19, skip_dlopen);
 
-    EMIT_ARM64_LOAD (X0, dylib_path);
-    EMIT_ARM64_LOAD (X1, dlopen_mode);
-    EMIT_ARM64_LOAD (X8, dlopen_impl);
-    EMIT_ARM64_CALL (X8);
-    EMIT_ARM64_MOVE (X19, X0);
-    EMIT_ARM64_STORE (module_handle, X19);
+    EMIT_AArch64_LOAD (X0, dylib_path);
+    EMIT_AArch64_LOAD (X1, dlopen_mode);
+    EMIT_AArch64_LOAD (X8, dlopen_impl);
+    EMIT_AArch64_CALL (X8);
+    EMIT_AArch64_MOVE (X19, X0);
+    EMIT_AArch64_STORE (module_handle, X19);
 
     gum_arm64_writer_put_label (&ctx->aw, skip_dlopen);
 
-    EMIT_ARM64_MOVE (X0, X19);
-    EMIT_ARM64_LOAD (X1, entrypoint_name);
-    EMIT_ARM64_LOAD (X8, dlsym_impl);
-    EMIT_ARM64_CALL (X8);
-    EMIT_ARM64_MOVE (X8, X0);
+    EMIT_AArch64_MOVE (X0, X19);
+    EMIT_AArch64_LOAD (X1, entrypoint_name);
+    EMIT_AArch64_LOAD (X8, dlsym_impl);
+    EMIT_AArch64_CALL (X8);
+    EMIT_AArch64_MOVE (X8, X0);
 
-    EMIT_ARM64_LOAD (X0, entrypoint_data);
-    EMIT_ARM64_LOAD_ADDRESS_OF (X1, unload_policy);
-    EMIT_ARM64_MOVE (X2, SP);
-    EMIT_ARM64_CALL (X8);
+    EMIT_AArch64_LOAD (X0, entrypoint_data);
+    EMIT_AArch64_LOAD_ADDRESS_OF (X1, unload_policy);
+    EMIT_AArch64_MOVE (X2, SP);
+    EMIT_AArch64_CALL (X8);
   }
 
-  gum_arm64_writer_put_pop_reg_reg (&ctx->aw, ARM64_REG_X0, ARM64_REG_X1);
+  gum_arm64_writer_put_pop_reg_reg (&ctx->aw, AArch64_REG_X0, AArch64_REG_X1);
 
-  EMIT_ARM64_LOAD (W0, unload_policy);
-  gum_arm64_writer_put_ldr_reg_u64 (&ctx->aw, ARM64_REG_X1, FRIDA_UNLOAD_POLICY_IMMEDIATE);
-  gum_arm64_writer_put_cmp_reg_reg (&ctx->aw, ARM64_REG_W0, ARM64_REG_W1);
-  gum_arm64_writer_put_b_cond_label (&ctx->aw, ARM64_CC_NE, skip_destruction);
+  EMIT_AArch64_LOAD (W0, unload_policy);
+  gum_arm64_writer_put_ldr_reg_u64 (&ctx->aw, AArch64_REG_X1, FRIDA_UNLOAD_POLICY_IMMEDIATE);
+  gum_arm64_writer_put_cmp_reg_reg (&ctx->aw, AArch64_REG_W0, AArch64_REG_W1);
+  gum_arm64_writer_put_b_cond_label (&ctx->aw, AArch64CC_NE, skip_destruction);
 
   if (ctx->mapper != NULL)
   {
-    gum_arm64_writer_put_ldr_reg_address (&ctx->aw, ARM64_REG_X8,
+    gum_arm64_writer_put_ldr_reg_address (&ctx->aw, AArch64_REG_X8,
         gum_strip_code_address (gum_darwin_mapper_destructor (ctx->mapper)));
-    EMIT_ARM64_CALL (X8);
+    EMIT_AArch64_CALL (X8);
   }
   else
   {
-    EMIT_ARM64_MOVE (X0, X19);
-    EMIT_ARM64_LOAD (X8, dlclose_impl);
-    EMIT_ARM64_CALL (X8);
+    EMIT_AArch64_MOVE (X0, X19);
+    EMIT_AArch64_LOAD (X8, dlclose_impl);
+    EMIT_AArch64_CALL (X8);
   }
 
   gum_arm64_writer_put_label (&ctx->aw, skip_destruction);
 
-  EMIT_ARM64_LOAD (W0, unload_policy);
-  gum_arm64_writer_put_ldr_reg_u64 (&ctx->aw, ARM64_REG_X1, FRIDA_UNLOAD_POLICY_DEFERRED);
-  gum_arm64_writer_put_cmp_reg_reg (&ctx->aw, ARM64_REG_W0, ARM64_REG_W1);
-  gum_arm64_writer_put_b_cond_label (&ctx->aw, ARM64_CC_EQ, skip_detach);
+  EMIT_AArch64_LOAD (W0, unload_policy);
+  gum_arm64_writer_put_ldr_reg_u64 (&ctx->aw, AArch64_REG_X1, FRIDA_UNLOAD_POLICY_DEFERRED);
+  gum_arm64_writer_put_cmp_reg_reg (&ctx->aw, AArch64_REG_W0, AArch64_REG_W1);
+  gum_arm64_writer_put_b_cond_label (&ctx->aw, AArch64CC_EQ, skip_detach);
 
-  EMIT_ARM64_LOAD (X8, pthread_self_impl);
-  EMIT_ARM64_CALL (X8);
+  EMIT_AArch64_LOAD (X8, pthread_self_impl);
+  EMIT_AArch64_CALL (X8);
 
-  EMIT_ARM64_LOAD (X8, pthread_detach_impl);
-  EMIT_ARM64_CALL (X8);
+  EMIT_AArch64_LOAD (X8, pthread_detach_impl);
+  EMIT_AArch64_CALL (X8);
 
   gum_arm64_writer_put_label (&ctx->aw, skip_detach);
 }
@@ -5408,7 +5408,7 @@ frida_find_run_initializers_call (mach_port_t task, GumCpuType cpu_type, GumAddr
     case GUM_CPU_ARM64:
       while (cs_disasm_iter (capstone, &code, &size, &address, insn))
       {
-        if (insn->id == ARM64_INS_LDR && insn->detail->arm64.operands[1].mem.disp == 0x28)
+        if (insn->id == AArch64_INS_LDR && insn->detail->aarch64.operands[1].mem.disp == 0x28)
         {
           match = insn->address;
           break;
@@ -5496,7 +5496,7 @@ frida_find_modinit_strcmp_checks (mach_port_t task, GumDarwinModule * dyld)
     case GUM_CPU_ARM64:
       while (cs_disasm_iter (capstone, &code, &size, &address, insn))
       {
-        if (insn->id == ARM64_INS_BL && insn->detail->arm64.operands[0].imm == dyld_strcmp)
+        if (insn->id == AArch64_INS_BL && insn->detail->aarch64.operands[0].imm == dyld_strcmp)
         {
           g_hash_table_add (checks, GSIZE_TO_POINTER (insn->address + insn->size));
         }
@@ -5608,7 +5608,7 @@ frida_find_function_end (mach_port_t task, GumCpuType cpu_type, GumAddress start
     case GUM_CPU_ARM64:
       while (cs_disasm_iter (capstone, &code, &size, &address, insn))
       {
-        if (insn->id == ARM64_INS_RET)
+        if (insn->id == AArch64_INS_RET)
         {
           match = insn->address;
           break;
@@ -5659,8 +5659,8 @@ frida_create_capstone (GumCpuType cpu_type, GumAddress start)
 
 #ifdef HAVE_ARM64
     case GUM_CPU_ARM64:
-      cs_arch_register_arm64 ();
-      err = cs_open (CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN, &capstone);
+      cs_arch_register_aarch64 ();
+      err = cs_open (CS_ARCH_AARCH64, CS_MODE_LITTLE_ENDIAN, &capstone);
       break;
 #endif
 
