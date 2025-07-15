@@ -1,5 +1,5 @@
 namespace Frida {
-	private class BareboneScript : Object {
+	private sealed class BareboneScript : Object {
 		public signal void message (string json, Bytes? data);
 
 		public AgentScriptId id {
@@ -42,8 +42,6 @@ namespace Frida {
 
 		private Gee.Queue<QuickJS.Value?> tick_callbacks = new Gee.ArrayQueue<QuickJS.Value?> ();
 
-		private Barebone.Allocation? cached_landing_zone; // TODO: Deallocate on teardown.
-
 		private Gee.Set<Barebone.Callback> native_callbacks = new Gee.HashSet<Barebone.Callback> ();
 
 		private static QuickJS.ClassID cpu_context_class;
@@ -55,6 +53,9 @@ namespace Frida {
 		private static QuickJS.ClassID invocation_args_class;
 		private static QuickJS.ClassExoticMethods invocation_args_exotic_methods;
 		private static QuickJS.ClassID invocation_retval_class;
+
+		private static QuickJS.ClassID c_module_class;
+		private Gee.Set<Barebone.CModule> c_modules = new Gee.HashSet<Barebone.CModule> ();
 
 		private static QuickJS.ClassID rust_module_class;
 		private Gee.Set<Barebone.RustModule> rust_modules = new Gee.HashSet<Barebone.RustModule> ();
@@ -72,7 +73,7 @@ namespace Frida {
 		private QuickJS.Value int64_func = QuickJS.Undefined;
 		private QuickJS.Value uint64_func = QuickJS.Undefined;
 
-		private Gee.ArrayList<QuickJS.Value?> entrypoints = new Gee.ArrayList<QuickJS.Value?> ();
+		private Gee.Queue<Entrypoint> entrypoints = new Gee.ArrayQueue<Entrypoint> ();
 		private Gee.Map<string, Asset> assets = new Gee.HashMap<string, Asset> ();
 
 		private Cancellable io_cancellable = new Cancellable ();
@@ -155,6 +156,7 @@ namespace Frida {
 
 			var memory_obj = ctx.make_object ();
 			add_cfunc (memory_obj, "alloc", on_memory_alloc, 1);
+			add_cfunc (memory_obj, "protect", on_memory_protect, 3);
 			add_cfunc (memory_obj, "scan", on_memory_scan, 4);
 			add_cfunc (memory_obj, "scanSync", on_memory_scan_sync, 3);
 			global.set_property_str (ctx, "Memory", memory_obj);
@@ -205,6 +207,17 @@ namespace Frida {
 			QuickJS.ClassDef ir;
 			ir.class_name = "InvocationReturnValue";
 			rt.make_class (QuickJS.make_class_id (ref invocation_retval_class), ir);
+
+			QuickJS.ClassDef cm;
+			cm.class_name = "CModule";
+			cm.finalizer = on_c_module_finalize;
+			rt.make_class (QuickJS.make_class_id (ref c_module_class), cm);
+			var cm_proto = ctx.make_object ();
+			add_cfunc (cm_proto, "dispose", on_c_module_dispose, 0);
+			ctx.set_class_proto (c_module_class, cm_proto);
+			var cm_ctor = ctx.make_cfunction2 (on_c_module_construct, cm.class_name, 1, constructor, 0);
+			cm_ctor.set_constructor (ctx, cm_proto);
+			global.set_property_str (ctx, "CModule", cm_ctor);
 
 			QuickJS.ClassDef rm;
 			rm.class_name = "RustModule";
@@ -328,6 +341,8 @@ namespace Frida {
 			foreach (var val in values)
 				ctx.free_value (val);
 
+			entrypoints.clear ();
+
 			QuickJS.Atom atoms[] = {
 				address_key,
 				base_key,
@@ -376,51 +391,70 @@ namespace Frida {
 			yield;
 		}
 
-		public void load () {
-			foreach (QuickJS.Value? entrypoint in entrypoints) {
-				var result = ctx.eval_function (entrypoint);
-				if (result.is_exception ())
+		public async void load (Cancellable? cancellable) throws IOError {
+			Entrypoint? entrypoint;
+			while ((entrypoint = entrypoints.poll ()) != null) {
+				var result = ctx.eval_function (ctx.dup_value (entrypoint.callable));
+				if (result.is_exception ()) {
 					catch_and_emit ();
-				ctx.free_value (result);
-
-				if (runtime_obj.is_undefined ()) {
-					runtime_obj = global.get_property_str (ctx, "$rt");
-					if (!runtime_obj.is_undefined ()) {
-						dispatch_exception_func = runtime_obj.get_property_str (ctx, "dispatchException");
-						assert (!dispatch_exception_func.is_undefined ());
-
-						dispatch_message_func = runtime_obj.get_property_str (ctx, "dispatchMessage");
-						assert (!dispatch_message_func.is_undefined ());
-
-						var native_pointer_instance = global.get_property_str (ctx, "NULL");
-						assert (!native_pointer_instance.is_undefined ());
-						var native_pointer_proto = native_pointer_instance.get_prototype (ctx);
-
-						var ir_proto = ctx.make_object_proto (native_pointer_proto);
-						add_cfunc (ir_proto, "replace", on_invocation_retval_replace, 1);
-						ctx.set_class_proto (invocation_retval_class, ir_proto);
-
-						ctx.free_value (native_pointer_proto);
-						ctx.free_value (native_pointer_instance);
-
-						ptr_func = global.get_property_str (ctx, "ptr");
-						assert (!ptr_func.is_undefined ());
-
-						int64_func = global.get_property_str (ctx, "int64");
-						assert (!int64_func.is_undefined ());
-
-						uint64_func = global.get_property_str (ctx, "uint64");
-						assert (!uint64_func.is_undefined ());
-					}
+					continue;
 				}
+
+				if (entrypoint.kind == ESM) {
+					var op = new PromiseWaitOperation (this, result);
+					var r = yield op.perform (cancellable);
+					if (!r.error.is_null ())
+						on_unhandled_exception (r.error);
+				} else {
+					ctx.free_value (result);
+				}
+
+				maybe_bind_runtime ();
 			}
 
 			perform_pending_io ();
 		}
 
+		private void maybe_bind_runtime () {
+			if (!runtime_obj.is_undefined ())
+				return;
+
+			runtime_obj = global.get_property_str (ctx, "$rt");
+			if (runtime_obj.is_undefined ())
+				return;
+
+			dispatch_exception_func = runtime_obj.get_property_str (ctx, "dispatchException");
+			assert (!dispatch_exception_func.is_undefined ());
+
+			dispatch_message_func = runtime_obj.get_property_str (ctx, "dispatchMessage");
+			assert (!dispatch_message_func.is_undefined ());
+
+			var native_pointer_instance = global.get_property_str (ctx, "NULL");
+			assert (!native_pointer_instance.is_undefined ());
+			var native_pointer_proto = native_pointer_instance.get_prototype (ctx);
+
+			var ir_proto = ctx.make_object_proto (native_pointer_proto);
+			add_cfunc (ir_proto, "replace", on_invocation_retval_replace, 1);
+			ctx.set_class_proto (invocation_retval_class, ir_proto);
+
+			ctx.free_value (native_pointer_proto);
+			ctx.free_value (native_pointer_instance);
+
+			ptr_func = global.get_property_str (ctx, "ptr");
+			assert (!ptr_func.is_undefined ());
+
+			int64_func = global.get_property_str (ctx, "int64");
+			assert (!int64_func.is_undefined ());
+
+			uint64_func = global.get_property_str (ctx, "uint64");
+			assert (!uint64_func.is_undefined ());
+		}
+
 		public void post (string json, Bytes? data) {
 			var json_val = ctx.make_string (json);
-			invoke_void (dispatch_message_func, { json_val }, runtime_obj);
+			var data_val = (data != null) ? ctx.make_array_buffer (data.get_data ()) : QuickJS.Null;
+			invoke_void (dispatch_message_func, { json_val, data_val }, runtime_obj);
+			ctx.free_value (data_val);
 			ctx.free_value (json_val);
 
 			perform_pending_io ();
@@ -493,7 +527,7 @@ namespace Frida {
 						throw_malformed_package ();
 
 					var val = compile_module (entrypoint);
-					entrypoints.add (val);
+					entrypoints.offer (new Entrypoint (this, val, ESM));
 
 					string rest = raw_assets[assets_offset:];
 					if (rest.has_prefix (delimiter_marker))
@@ -505,7 +539,7 @@ namespace Frida {
 				}
 			} else {
 				var val = compile_script (source, name);
-				entrypoints.add (val);
+				entrypoints.offer (new Entrypoint (this, val, PLAIN));
 			}
 		}
 
@@ -651,11 +685,7 @@ namespace Frida {
 
 		private async void do_invoke (uint64 impl, uint64[] args, Promise<uint64?> promise) {
 			try {
-				if (cached_landing_zone == null)
-					cached_landing_zone = yield services.allocator.allocate (4, 1, io_cancellable);
-
-				uint64 retval = yield services.machine.invoke (impl, args, cached_landing_zone.virtual_address,
-					io_cancellable);
+				uint64 retval = yield services.machine.invoke (impl, args, io_cancellable);
 
 				promise.resolve (retval);
 			} catch (GLib.Error e) {
@@ -703,6 +733,111 @@ namespace Frida {
 				promise.resolve (callback);
 			} catch (GLib.Error e) {
 				promise.reject (e);
+			}
+		}
+
+		private class Entrypoint {
+			private weak BareboneScript script;
+			public QuickJS.Value callable;
+			public Kind kind;
+
+			public enum Kind {
+				PLAIN,
+				ESM
+			}
+
+			public Entrypoint (BareboneScript script, QuickJS.Value callable, Kind kind) {
+				this.script = script;
+				this.callable = callable;
+				this.kind = kind;
+			}
+
+			~Entrypoint () {
+				script.ctx.free_value (callable);
+			}
+		}
+
+		private class PromiseWaitOperation {
+			private BareboneScript script;
+			private QuickJS.Value promise;
+
+			private enum Magic {
+				ON_SUCCESS,
+				ON_FAILURE,
+			}
+
+			public PromiseWaitOperation (BareboneScript script, QuickJS.Value promise) {
+				this.script = script;
+				this.promise = promise;
+			}
+
+			~PromiseWaitOperation () {
+				script.ctx.free_value (promise);
+			}
+
+			public async Result perform (Cancellable? cancellable) throws IOError {
+				var res = new Result (script, perform.callback);
+
+				unowned QuickJS.Context ctx = script.ctx;
+
+				var data = ctx.make_object ();
+				data.set_opaque (res);
+
+				var on_success = ctx.make_cfunction_data (on_settled, 1, Magic.ON_SUCCESS, { data });
+				var on_failure = ctx.make_cfunction_data (on_settled, 1, Magic.ON_FAILURE, { data });
+
+				var then_func = promise.get_property_str (ctx, "then");
+				var catch_func = promise.get_property_str (ctx, "catch");
+
+				ctx.free_value (then_func.call (ctx, promise, { on_success }));
+				ctx.free_value (catch_func.call (ctx, promise, { on_failure }));
+
+				ctx.free_value (catch_func);
+				ctx.free_value (then_func);
+
+				ctx.free_value (on_failure);
+				ctx.free_value (on_success);
+
+				script.perform_pending_io ();
+				yield;
+
+				return res;
+			}
+
+			private static QuickJS.Value on_settled (QuickJS.Context ctx, QuickJS.Value this_val, QuickJS.Value[] argv, int magic,
+					QuickJS.Value[] data) {
+				QuickJS.ClassID cid;
+				unowned Result res = (Result) data[0].get_any_opaque (out cid);
+
+				if (magic == Magic.ON_SUCCESS)
+					res.val = ctx.dup_value (argv[0]);
+				else
+					res.error = ctx.dup_value (argv[0]);
+
+				var source = new IdleSource ();
+				source.set_callback ((owned) res.on_complete);
+				source.attach (MainContext.get_thread_default ());
+
+				return QuickJS.Undefined;
+			}
+
+			public class Result {
+				public BareboneScript script;
+				public SourceFunc on_complete;
+
+				public QuickJS.Value val = QuickJS.Null;
+				public QuickJS.Value error = QuickJS.Null;
+
+				public Result (BareboneScript script, owned SourceFunc on_complete) {
+					this.script = script;
+					this.on_complete = (owned) on_complete;
+				}
+
+				~Result () {
+					unowned QuickJS.Context ctx = script.ctx;
+					ctx.free_value (val);
+					ctx.free_value (error);
+				}
 			}
 		}
 
@@ -995,6 +1130,41 @@ namespace Frida {
 				promise.resolve (allocation);
 			} catch (GLib.Error e) {
 				promise.reject (e);
+			}
+		}
+
+		private static QuickJS.Value on_memory_protect (QuickJS.Context ctx, QuickJS.Value this_val, QuickJS.Value[] argv) {
+			BareboneScript * script = ctx.get_opaque ();
+
+			uint64 address;
+			if (!script->unparse_native_pointer (argv[0], out address))
+				return QuickJS.Exception;
+
+			uint size;
+			if (!script->unparse_uint (argv[1], out size))
+				return QuickJS.Exception;
+
+			Gum.PageProtection prot;
+			if (!script->unparse_page_protection (argv[2], out prot))
+				return QuickJS.Exception;
+
+			var promise = new Promise<bool?> ();
+			script->do_memory_protect.begin (address, size, prot, promise);
+
+			bool? result = script->process_events_until_ready (promise);
+			if (result == null)
+				return QuickJS.Exception;
+
+			return ctx.make_bool (result);
+		}
+
+		private async void do_memory_protect (uint64 address, size_t size, Gum.PageProtection prot, Promise<bool?> promise) {
+			try {
+				yield services.machine.protect_pages (address, size, prot, io_cancellable);
+
+				promise.resolve (true);
+			} catch (GLib.Error e) {
+				promise.resolve (false);
 			}
 		}
 
@@ -1665,6 +1835,67 @@ namespace Frida {
 			return QuickJS.Undefined;
 		}
 
+		private static QuickJS.Value on_c_module_construct (QuickJS.Context ctx, QuickJS.Value new_target,
+				QuickJS.Value[] argv) {
+			BareboneScript * script = ctx.get_opaque ();
+
+			Bytes blob;
+			if (!script->unparse_bytes (argv[0], out blob))
+				return QuickJS.Exception;
+
+			var promise = new Promise<Barebone.CModule> ();
+			script->load_c_module.begin (blob, promise);
+
+			Barebone.CModule? mod = script->process_events_until_ready (promise);
+			if (mod == null)
+				return QuickJS.Exception;
+
+			var proto = new_target.get_property (ctx, script->prototype_key);
+			var wrapper = ctx.make_object_with_proto_and_class (proto, c_module_class);
+			ctx.free_value (proto);
+
+			wrapper.set_opaque (mod);
+			script->c_modules.add (mod);
+
+			foreach (var e in mod.exports)
+				wrapper.set_property_str (ctx, e.name, script->make_native_pointer (e.address));
+
+			mod.console_output.connect (script->on_console_output);
+
+			return wrapper;
+		}
+
+		private async void load_c_module (Bytes blob, Promise<Barebone.CModule> promise) {
+			try {
+				var mod = yield new Barebone.CModule.from_blob (blob, services.machine, services.allocator, io_cancellable);
+
+				promise.resolve (mod);
+			} catch (GLib.Error e) {
+				promise.reject (e);
+			}
+		}
+
+		private static void on_c_module_finalize (QuickJS.Runtime rt, QuickJS.Value val) {
+			Barebone.CModule * mod = val.get_opaque (c_module_class);
+			if (mod == null)
+				return;
+
+			BareboneScript * script = rt.get_opaque ();
+			script->c_modules.remove (mod);
+		}
+
+		private static QuickJS.Value on_c_module_dispose (QuickJS.Context ctx, QuickJS.Value this_val, QuickJS.Value[] argv) {
+			Barebone.CModule * mod = this_val.get_opaque (c_module_class);
+
+			if (mod != null) {
+				this_val.set_opaque (null);
+				BareboneScript * script = ctx.get_opaque ();
+				script->c_modules.remove (mod);
+			}
+
+			return QuickJS.Undefined;
+		}
+
 		private static QuickJS.Value on_rust_module_construct (QuickJS.Context ctx, QuickJS.Value new_target,
 				QuickJS.Value[] argv) {
 			BareboneScript * script = ctx.get_opaque ();
@@ -1734,7 +1965,7 @@ namespace Frida {
 			foreach (var e in mod.exports)
 				wrapper.set_property_str (ctx, e.name, script->make_native_pointer (e.address));
 
-			mod.console_output.connect (script->on_rust_module_console_output);
+			mod.console_output.connect (script->on_console_output);
 
 			return wrapper;
 		}
@@ -1772,7 +2003,7 @@ namespace Frida {
 			return QuickJS.Undefined;
 		}
 
-		private void on_rust_module_console_output (string message) {
+		private void on_console_output (string message) {
 			var builder = new Json.Builder ();
 			builder
 				.begin_object ()

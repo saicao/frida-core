@@ -1,6 +1,6 @@
 namespace Frida {
 #if WINDOWS
-	public class FileDescriptorTablePadder {
+	public sealed class FileDescriptorTablePadder {
 		public static FileDescriptorTablePadder obtain () {
 			return new FileDescriptorTablePadder ();
 		}
@@ -9,7 +9,7 @@ namespace Frida {
 		}
 	}
 #else
-	public class FileDescriptorTablePadder {
+	public sealed class FileDescriptorTablePadder {
 		private const int MIN_TABLE_SIZE = 32;
 
 		private static unowned FileDescriptorTablePadder shared_instance = null;
@@ -67,7 +67,7 @@ namespace Frida {
 			int result = -1;
 #if LINUX
 			do {
-				result = Linux.dup3 (fd, pair[0], Posix.FD_CLOEXEC);
+				result = LibcShim.dup3 (fd, pair[0], Posix.FD_CLOEXEC);
 			} while (result == -1 && Posix.errno == Posix.EINTR);
 #else
 			do {

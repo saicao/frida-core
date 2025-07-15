@@ -1,0 +1,8 @@
+[wrap-git]
+url = https://github.com/frida/lwip.git
+revision = 267d9f082e9e38083b643421a93c03d4a7046fd0
+depth = 1
+
+[provide]
+dependency_names = lwip
+

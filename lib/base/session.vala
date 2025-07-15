@@ -1,5 +1,5 @@
 namespace Frida {
-	[DBus (name = "re.frida.HostSession16")]
+	[DBus (name = "re.frida.HostSession17")]
 	public interface HostSession : Object {
 		public abstract async void ping (uint interval_seconds, Cancellable? cancellable) throws GLib.Error;
 
@@ -27,6 +27,10 @@ namespace Frida {
 		public abstract async InjectorPayloadId inject_library_blob (uint pid, uint8[] blob, string entrypoint, string data,
 			Cancellable? cancellable) throws GLib.Error;
 
+		public abstract async ChannelId open_channel (string address, Cancellable? cancellable) throws GLib.Error;
+
+		public abstract async ServiceSessionId open_service (string address, Cancellable? cancellable) throws GLib.Error;
+
 		public signal void spawn_added (HostSpawnInfo info);
 		public signal void spawn_removed (HostSpawnInfo info);
 		public signal void child_added (HostChildInfo info);
@@ -34,10 +38,12 @@ namespace Frida {
 		public signal void process_crashed (CrashInfo crash);
 		public signal void output (uint pid, int fd, uint8[] data);
 		public signal void agent_session_detached (AgentSessionId id, SessionDetachReason reason, CrashInfo crash);
+		public signal void channel_closed (ChannelId id);
+		public signal void service_session_closed (ServiceSessionId id);
 		public signal void uninjected (InjectorPayloadId id);
 	}
 
-	[DBus (name = "re.frida.AgentSessionProvider16")]
+	[DBus (name = "re.frida.AgentSessionProvider17")]
 	public interface AgentSessionProvider : Object {
 		public abstract async void open (AgentSessionId id, HashTable<string, Variant> options,
 			Cancellable? cancellable) throws GLib.Error;
@@ -52,7 +58,7 @@ namespace Frida {
 		public signal void child_gating_changed (uint subscriber_count);
 	}
 
-	[DBus (name = "re.frida.AgentSession16")]
+	[DBus (name = "re.frida.AgentSession17")]
 	public interface AgentSession : Object {
 		public abstract async void close (Cancellable? cancellable) throws GLib.Error;
 
@@ -94,7 +100,7 @@ namespace Frida {
 		public signal void candidate_gathering_done ();
 	}
 
-	[DBus (name = "re.frida.AgentController16")]
+	[DBus (name = "re.frida.AgentController17")]
 	public interface AgentController : Object {
 #if !WINDOWS
 		public abstract async HostChildId prepare_to_fork (uint parent_pid, Cancellable? cancellable, out uint parent_injectee_id,
@@ -115,7 +121,7 @@ namespace Frida {
 			Cancellable? cancellable) throws GLib.Error;
 	}
 
-	[DBus (name = "re.frida.AgentMessageSink16")]
+	[DBus (name = "re.frida.AgentMessageSink17")]
 	public interface AgentMessageSink : Object {
 		public abstract async void post_messages (AgentMessage[] messages, uint batch_id,
 			Cancellable? cancellable) throws GLib.Error;
@@ -145,10 +151,15 @@ namespace Frida {
 		DEBUGGER
 	}
 
-	public class AgentMessageTransmitter : Object {
+	public sealed class AgentMessageTransmitter : Object {
 		public signal void closed ();
 		public signal void new_candidates (string[] candidate_sdps);
 		public signal void candidate_gathering_done ();
+
+		public weak AgentSession agent_session {
+			get;
+			construct;
+		}
 
 		public uint persist_timeout {
 			get;
@@ -198,8 +209,10 @@ namespace Frida {
 			INTERRUPTED
 		}
 
-		public AgentMessageTransmitter (uint persist_timeout, MainContext frida_context, MainContext dbus_context) {
+		public AgentMessageTransmitter (AgentSession agent_session, uint persist_timeout, MainContext frida_context,
+				MainContext dbus_context) {
 			Object (
+				agent_session: agent_session,
 				persist_timeout: persist_timeout,
 				frida_context: frida_context,
 				dbus_context: dbus_context
@@ -500,8 +513,7 @@ namespace Frida {
 				nice_connection.on_closed.connect (on_nice_connection_closed);
 
 				try {
-					nice_registration_id = nice_connection.register_object (ObjectPath.AGENT_SESSION,
-						(AgentSession) this);
+					nice_registration_id = nice_connection.register_object (ObjectPath.AGENT_SESSION, agent_session);
 				} catch (IOError io_error) {
 					assert_not_reached ();
 				}
@@ -737,13 +749,30 @@ namespace Frida {
 		}
 	}
 
-	[DBus (name = "re.frida.TransportBroker16")]
+	[DBus (name = "re.frida.Channel17")]
+	public interface Channel : Object {
+		public abstract async void close (Cancellable? cancellable) throws GLib.Error;
+		public abstract async void input (uint8[] data, Cancellable? cancellable) throws GLib.Error;
+		public signal void output (uint8[] data);
+	}
+
+	[DBus (name = "re.frida.ServiceSession17")]
+	public interface ServiceSession : Object {
+		public signal void close ();
+		public signal void message (Variant message);
+
+		public abstract async void activate (Cancellable? cancellable) throws GLib.Error;
+		public abstract async void cancel (Cancellable? cancellable) throws GLib.Error;
+		public abstract async Variant request (Variant parameters, Cancellable? cancellable) throws GLib.Error;
+	}
+
+	[DBus (name = "re.frida.TransportBroker17")]
 	public interface TransportBroker : Object {
 		public abstract async void open_tcp_transport (AgentSessionId id, Cancellable? cancellable, out uint16 port,
 			out string token) throws GLib.Error;
 	}
 
-	[DBus (name = "re.frida.PortalSession16")]
+	[DBus (name = "re.frida.PortalSession17")]
 	public interface PortalSession : Object {
 		public abstract async void join (HostApplicationInfo app, SpawnStartState current_state,
 			AgentSessionId[] interrupted_sessions, HashTable<string, Variant> options, Cancellable? cancellable,
@@ -752,19 +781,19 @@ namespace Frida {
 		public signal void kill ();
 	}
 
-	[DBus (name = "re.frida.BusSession16")]
+	[DBus (name = "re.frida.BusSession17")]
 	public interface BusSession : Object {
 		public abstract async void attach (Cancellable? cancellable) throws GLib.Error;
 		public abstract async void post (string json, bool has_data, uint8[] data, Cancellable? cancellable) throws GLib.Error;
 		public signal void message (string json, bool has_data, uint8[] data);
 	}
 
-	[DBus (name = "re.frida.AuthenticationService16")]
+	[DBus (name = "re.frida.AuthenticationService17")]
 	public interface AuthenticationService : Object {
 		public abstract async string authenticate (string token, Cancellable? cancellable) throws GLib.Error;
 	}
 
-	public class StaticAuthenticationService : Object, AuthenticationService {
+	public sealed class StaticAuthenticationService : Object, AuthenticationService {
 		public string token_hash {
 			get;
 			construct;
@@ -789,13 +818,13 @@ namespace Frida {
 		}
 	}
 
-	public class NullAuthenticationService : Object, AuthenticationService {
+	public sealed class NullAuthenticationService : Object, AuthenticationService {
 		public async string authenticate (string token, Cancellable? cancellable) throws Error, IOError {
 			throw new Error.INVALID_OPERATION ("Authentication not expected");
 		}
 	}
 
-	public class UnauthorizedHostSession : Object, HostSession {
+	public sealed class UnauthorizedHostSession : Object, HostSession {
 		public async void ping (uint interval_seconds, Cancellable? cancellable) throws Error, IOError {
 			throw_not_authorized ();
 		}
@@ -869,9 +898,17 @@ namespace Frida {
 				Cancellable? cancellable) throws Error, IOError {
 			throw_not_authorized ();
 		}
+
+		public async ChannelId open_channel (string address, Cancellable? cancellable) throws Error, IOError {
+			throw_not_authorized ();
+		}
+
+		public async ServiceSessionId open_service (string address, Cancellable? cancellable) throws Error, IOError {
+			throw_not_authorized ();
+		}
 	}
 
-	public class UnauthorizedPortalSession : Object, PortalSession {
+	public sealed class UnauthorizedPortalSession : Object, PortalSession {
 		public async void join (HostApplicationInfo app, SpawnStartState current_state,
 				AgentSessionId[] interrupted_sessions, HashTable<string, Variant> options,
 				Cancellable? cancellable, out SpawnStartState next_state) throws Error, IOError {
@@ -879,7 +916,7 @@ namespace Frida {
 		}
 	}
 
-	public class UnauthorizedBusSession : Object, BusSession {
+	public sealed class UnauthorizedBusSession : Object, BusSession {
 		public async void attach (Cancellable? cancellable) throws Error, IOError {
 			throw_not_authorized ();
 		}
@@ -1077,7 +1114,7 @@ namespace Frida {
 		}
 	}
 
-	public class FrontmostQueryOptions : Object {
+	public sealed class FrontmostQueryOptions : Object {
 		public Scope scope {
 			get;
 			set;
@@ -1107,7 +1144,7 @@ namespace Frida {
 		}
 	}
 
-	public class ApplicationQueryOptions : Object {
+	public sealed class ApplicationQueryOptions : Object {
 		public Scope scope {
 			get;
 			set;
@@ -1165,7 +1202,7 @@ namespace Frida {
 		}
 	}
 
-	public class ProcessQueryOptions : Object {
+	public sealed class ProcessQueryOptions : Object {
 		public Scope scope {
 			get;
 			set;
@@ -1307,7 +1344,7 @@ namespace Frida {
 		}
 	}
 
-	public class SessionOptions : Object {
+	public sealed class SessionOptions : Object {
 		public Realm realm {
 			get;
 			set;
@@ -1496,6 +1533,46 @@ namespace Frida {
 		}
 	}
 
+	public struct ChannelId {
+		public string handle;
+
+		public ChannelId (string handle) {
+			this.handle = handle;
+		}
+
+		public ChannelId.generate () {
+			this.handle = Uuid.string_random ().replace ("-", "");
+		}
+
+		public static uint hash (ChannelId? id) {
+			return id.handle.hash ();
+		}
+
+		public static bool equal (ChannelId? a, ChannelId? b) {
+			return a.handle == b.handle;
+		}
+	}
+
+	public struct ServiceSessionId {
+		public string handle;
+
+		public ServiceSessionId (string handle) {
+			this.handle = handle;
+		}
+
+		public ServiceSessionId.generate () {
+			this.handle = Uuid.string_random ().replace ("-", "");
+		}
+
+		public static uint hash (ServiceSessionId? id) {
+			return id.handle.hash ();
+		}
+
+		public static bool equal (ServiceSessionId? a, ServiceSessionId? b) {
+			return a.handle == b.handle;
+		}
+	}
+
 	public struct AgentScriptId {
 		public uint handle;
 
@@ -1512,7 +1589,7 @@ namespace Frida {
 		}
 	}
 
-	public class ScriptOptions : Object {
+	public sealed class ScriptOptions : Object {
 		public string? name {
 			get;
 			set;
@@ -1602,7 +1679,7 @@ namespace Frida {
 		SHARED_MEMORY
 	}
 
-	public class SnapshotOptions : Object {
+	public sealed class SnapshotOptions : Object {
 		public string? warmup_script {
 			get;
 			set;
@@ -1677,7 +1754,7 @@ namespace Frida {
 		}
 	}
 
-	public class PortalOptions : Object {
+	public sealed class PortalOptions : Object {
 		public TlsCertificate? certificate {
 			get;
 			set;
@@ -1740,7 +1817,7 @@ namespace Frida {
 		}
 	}
 
-	public class PeerOptions : Object {
+	public sealed class PeerOptions : Object {
 		public string? stun_server {
 			get;
 			set;
@@ -1801,7 +1878,7 @@ namespace Frida {
 		}
 	}
 
-	public class Relay : Object {
+	public sealed class Relay : Object {
 		public string address {
 			get;
 			construct;
@@ -2042,7 +2119,8 @@ namespace Frida {
 		public const string AGENT_SESSION = "/re/frida/AgentSession";
 		public const string AGENT_CONTROLLER = "/re/frida/AgentController";
 		public const string AGENT_MESSAGE_SINK = "/re/frida/AgentMessageSink";
-		public const string CHILD_SESSION = "/re/frida/ChildSession";
+		public const string CHANNEL = "/re/frida/Channel";
+		public const string SERVICE = "/re/frida/Service";
 		public const string TRANSPORT_BROKER = "/re/frida/TransportBroker";
 		public const string PORTAL_SESSION = "/re/frida/PortalSession";
 		public const string BUS_SESSION = "/re/frida/BusSession";
@@ -2054,6 +2132,14 @@ namespace Frida {
 
 		public static string for_agent_message_sink (AgentSessionId id) {
 			return AGENT_MESSAGE_SINK + "/" + id.handle;
+		}
+
+		public static string for_channel (ChannelId id) {
+			return CHANNEL + "/" + id.handle;
+		}
+
+		public static string for_service_session (ServiceSessionId id) {
+			return SERVICE + "/" + id.handle;
 		}
 	}
 
@@ -2069,6 +2155,30 @@ namespace Frida {
 		public static string enum_to_nick<T> (int val) {
 			var klass = (EnumClass) typeof (T).class_ref ();
 			return klass.get_value (val).value_nick;
+		}
+	}
+
+	namespace Numeric {
+		public uint int64_hash (int64? val) {
+			uint64 v = (uint64) val.abs ();
+			return (uint) ((v >> 32) ^ (v & 0xffffffffU));
+		}
+
+		public bool int64_equal (int64? val_a, int64? val_b) {
+			int64 a = val_a;
+			int64 b = val_b;
+			return a == b;
+		}
+
+		public uint uint64_hash (uint64? val) {
+			uint64 v = val;
+			return (uint) ((v >> 32) ^ (v & 0xffffffffU));
+		}
+
+		public bool uint64_equal (uint64? val_a, uint64? val_b) {
+			uint64 a = val_a;
+			uint64 b = val_b;
+			return a == b;
 		}
 	}
 }

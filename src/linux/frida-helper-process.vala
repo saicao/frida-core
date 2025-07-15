@@ -1,5 +1,5 @@
 namespace Frida {
-	public class LinuxHelperProcess : Object, LinuxHelper {
+	public sealed class LinuxHelperProcess : Object, LinuxHelper {
 		public TemporaryDirectory tempdir {
 			get;
 			construct;
@@ -204,8 +204,14 @@ namespace Frida {
 		private async LinuxHelper obtain_for_64bit (Cancellable? cancellable) throws Error, IOError {
 			if (factory64 == null) {
 				var store = get_resource_store ();
+#if !ARM64
+				/*
+				 * If we are building for ARM64 and our pointer size is not 8-bytes, then we must be building for
+				 * ILP32, so avoid the spurious error.
+				 */
 				if (sizeof (void *) != 8 && store.helper64 == null)
 					throw new Error.NOT_SUPPORTED ("Unable to handle 64-bit processes due to build configuration");
+#endif
 				factory64 = new HelperFactory (store.helper64, store, main_context);
 				factory64.lost.connect (on_factory_lost);
 				factory64.output.connect (on_factory_output);
@@ -240,7 +246,7 @@ namespace Frida {
 		}
 	}
 
-	private class HelperFactory {
+	private sealed class HelperFactory {
 		public signal void lost (LinuxHelper helper);
 		public signal void output (uint pid, int fd, uint8[] data);
 		public signal void uninjected (uint id);
@@ -451,7 +457,7 @@ namespace Frida {
 		}
 	}
 
-	private class HelperSession : Object, LinuxHelper {
+	private sealed class HelperSession : Object, LinuxHelper {
 		public LinuxRemoteHelper proxy {
 			get;
 			construct;
@@ -600,7 +606,7 @@ namespace Frida {
 		}
 	}
 
-	private class ResourceStore {
+	private sealed class ResourceStore {
 		public TemporaryDirectory tempdir {
 			get;
 			private set;
@@ -653,7 +659,7 @@ namespace Frida {
 #endif
 	}
 
-	private class MemoryHelperFile : Object, HelperFile {
+	private sealed class MemoryHelperFile : Object, HelperFile {
 		public FileDescriptor fd {
 			get;
 			construct;

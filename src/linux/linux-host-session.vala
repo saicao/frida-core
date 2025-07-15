@@ -1,84 +1,18 @@
 namespace Frida {
-	public class LinuxHostSessionBackend : Object, HostSessionBackend {
-		private LinuxHostSessionProvider local_provider;
-
-		public async void start (Cancellable? cancellable) throws IOError {
-			assert (local_provider == null);
-			local_provider = new LinuxHostSessionProvider ();
-			provider_available (local_provider);
-		}
-
-		public async void stop (Cancellable? cancellable) throws IOError {
-			assert (local_provider != null);
-			provider_unavailable (local_provider);
-			yield local_provider.close (cancellable);
-			local_provider = null;
+	public sealed class LinuxHostSessionBackend : LocalHostSessionBackend {
+		protected override LocalHostSessionProvider make_provider () {
+			return new LinuxHostSessionProvider ();
 		}
 	}
 
-	public class LinuxHostSessionProvider : Object, HostSessionProvider {
-		public string id {
-			get { return "local"; }
-		}
-
-		public string name {
-			get { return "Local System"; }
-		}
-
-		public Variant? icon {
-			get { return null; }
-		}
-
-		public HostSessionProviderKind kind {
-			get { return HostSessionProviderKind.LOCAL; }
-		}
-
-		private LinuxHostSession host_session;
-
-		public async void close (Cancellable? cancellable) throws IOError {
-			if (host_session == null)
-				return;
-			host_session.agent_session_detached.disconnect (on_agent_session_detached);
-			yield host_session.close (cancellable);
-			host_session = null;
-		}
-
-		public async HostSession create (HostSessionOptions? options, Cancellable? cancellable) throws Error, IOError {
-			if (host_session != null)
-				throw new Error.INVALID_OPERATION ("Already created");
-
+	public sealed class LinuxHostSessionProvider : LocalHostSessionProvider {
+		protected override LocalHostSession make_host_session (HostSessionOptions? options) throws Error {
 			var tempdir = new TemporaryDirectory ();
-
-			host_session = new LinuxHostSession (new LinuxHelperProcess (tempdir), tempdir);
-			host_session.agent_session_detached.connect (on_agent_session_detached);
-
-			return host_session;
-		}
-
-		public async void destroy (HostSession session, Cancellable? cancellable) throws Error, IOError {
-			if (session != host_session)
-				throw new Error.INVALID_ARGUMENT ("Invalid host session");
-
-			host_session.agent_session_detached.disconnect (on_agent_session_detached);
-
-			yield host_session.close (cancellable);
-			host_session = null;
-		}
-
-		public async AgentSession link_agent_session (HostSession host_session, AgentSessionId id, AgentMessageSink sink,
-				Cancellable? cancellable) throws Error, IOError {
-			if (host_session != this.host_session)
-				throw new Error.INVALID_ARGUMENT ("Invalid host session");
-
-			return yield this.host_session.link_agent_session (id, sink, cancellable);
-		}
-
-		private void on_agent_session_detached (AgentSessionId id, SessionDetachReason reason, CrashInfo crash) {
-			agent_session_detached (id, reason, crash);
+			return new LinuxHostSession (new LinuxHelperProcess (tempdir), tempdir);
 		}
 	}
 
-	public class LinuxHostSession : BaseDBusHostSession {
+	public sealed class LinuxHostSession : LocalHostSession {
 		public LinuxHelper helper {
 			get;
 			construct;
@@ -508,7 +442,7 @@ namespace Frida {
 	}
 
 #if ANDROID
-	private class RoboLauncher : Object {
+	private sealed class RoboLauncher : Object {
 		public signal void spawn_added (HostSpawnInfo info);
 		public signal void spawn_removed (HostSpawnInfo info);
 
@@ -808,7 +742,7 @@ namespace Frida {
 		}
 	}
 
-	private class ZygoteAgent : InternalAgent {
+	private sealed class ZygoteAgent : InternalAgent {
 		public uint pid {
 			get;
 			construct;
@@ -861,7 +795,7 @@ namespace Frida {
 		}
 	}
 
-	private class SystemServerAgent : InternalAgent {
+	private sealed class SystemServerAgent : InternalAgent {
 		private delegate void CompletionNotify ();
 
 		public SystemServerAgent (LinuxHostSession host_session) {
@@ -894,7 +828,7 @@ namespace Frida {
 			var scope = options.scope;
 			var scope_node = new Json.Node.alloc ().init_string (scope.to_nick ());
 
-			Json.Node result = yield call ("getFrontmostApplication", new Json.Node[] { scope_node }, cancellable);
+			Json.Node result = yield call ("getFrontmostApplication", new Json.Node[] { scope_node }, null, cancellable);
 
 			if (result.get_node_type () == NULL)
 				return HostApplicationInfo.empty ();
@@ -920,7 +854,7 @@ namespace Frida {
 			var scope = options.scope;
 			var scope_node = new Json.Node.alloc ().init_string (scope.to_nick ());
 
-			Json.Node apps = yield call ("enumerateApplications", new Json.Node[] { identifiers_node, scope_node },
+			Json.Node apps = yield call ("enumerateApplications", new Json.Node[] { identifiers_node, scope_node }, null,
 				cancellable);
 
 			var items = apps.get_array ();
@@ -946,7 +880,7 @@ namespace Frida {
 			var package_name_node = new Json.Node.alloc ().init_string (package);
 			var uid_node = new Json.Node.alloc ().init_int (uid);
 
-			Json.Node name = yield call ("getProcessName", new Json.Node[] { package_name_node, uid_node }, cancellable);
+			Json.Node name = yield call ("getProcessName", new Json.Node[] { package_name_node, uid_node }, null, cancellable);
 
 			return name.get_string ();
 		}
@@ -960,7 +894,8 @@ namespace Frida {
 
 			var scope_node = new Json.Node.alloc ().init_string (scope.to_nick ());
 
-			Json.Node by_pid = yield call ("getProcessParameters", new Json.Node[] { pids_node, scope_node }, cancellable);
+			Json.Node by_pid = yield call ("getProcessParameters", new Json.Node[] { pids_node, scope_node }, null,
+				cancellable);
 
 			var result = new Gee.HashMap<uint, HashTable<string, Variant>> ();
 			by_pid.get_object ().foreach_member ((object, pid_str, parameters_node) => {
@@ -982,20 +917,20 @@ namespace Frida {
 			if (entrypoint is DefaultActivityEntrypoint) {
 				var activity_node = new Json.Node.alloc ().init_null ();
 
-				yield call ("startActivity", new Json.Node[] { package_node, activity_node, uid_node }, cancellable);
+				yield call ("startActivity", new Json.Node[] { package_node, activity_node, uid_node }, null, cancellable);
 			} else if (entrypoint is ActivityEntrypoint) {
 				var e = entrypoint as ActivityEntrypoint;
 
 				var activity_node = new Json.Node.alloc ().init_string (e.activity);
 
-				yield call ("startActivity", new Json.Node[] { package_node, activity_node, uid_node }, cancellable);
+				yield call ("startActivity", new Json.Node[] { package_node, activity_node, uid_node }, null, cancellable);
 			} else if (entrypoint is BroadcastReceiverEntrypoint) {
 				var e = entrypoint as BroadcastReceiverEntrypoint;
 
 				var receiver_node = new Json.Node.alloc ().init_string (e.receiver);
 				var action_node = new Json.Node.alloc ().init_string (e.action);
 
-				yield call ("sendBroadcast", new Json.Node[] { package_node, receiver_node, action_node, uid_node },
+				yield call ("sendBroadcast", new Json.Node[] { package_node, receiver_node, action_node, uid_node }, null,
 					cancellable);
 			} else {
 				assert_not_reached ();
@@ -1006,13 +941,13 @@ namespace Frida {
 			var package_node = new Json.Node.alloc ().init_string (package);
 			var uid_node = new Json.Node.alloc ().init_int (uid);
 
-			yield call ("stopPackage", new Json.Node[] { package_node, uid_node }, cancellable);
+			yield call ("stopPackage", new Json.Node[] { package_node, uid_node }, null, cancellable);
 		}
 
 		public async bool try_stop_package_by_pid (uint pid, Cancellable? cancellable) throws Error, IOError {
 			var pid_node = new Json.Node.alloc ().init_int (pid);
 
-			Json.Node success = yield call ("tryStopPackageByPid", new Json.Node[] { pid_node }, cancellable);
+			Json.Node success = yield call ("tryStopPackageByPid", new Json.Node[] { pid_node }, null, cancellable);
 
 			return success.get_boolean ();
 		}
@@ -1182,7 +1117,7 @@ namespace Frida {
 		}
 	}
 
-	private class CrashMonitor : Object {
+	private sealed class CrashMonitor : Object {
 		public signal void process_crashed (CrashInfo crash);
 
 		private Object logcat;
@@ -1612,7 +1547,7 @@ namespace Frida {
 		return result.str;
 	}
 
-	private class PackageEntrypoint : Object {
+	private abstract class PackageEntrypoint : Object {
 		public int uid {
 			get;
 			set;
@@ -1672,13 +1607,13 @@ namespace Frida {
 		}
 	}
 
-	private class DefaultActivityEntrypoint : PackageEntrypoint {
+	private sealed class DefaultActivityEntrypoint : PackageEntrypoint {
 		public DefaultActivityEntrypoint () {
 			Object ();
 		}
 	}
 
-	private class ActivityEntrypoint : PackageEntrypoint {
+	private sealed class ActivityEntrypoint : PackageEntrypoint {
 		public string activity {
 			get;
 			construct;
@@ -1689,7 +1624,7 @@ namespace Frida {
 		}
 	}
 
-	private class BroadcastReceiverEntrypoint : PackageEntrypoint {
+	private sealed class BroadcastReceiverEntrypoint : PackageEntrypoint {
 		public string receiver {
 			get;
 			construct;

@@ -1,5 +1,5 @@
 namespace Frida {
-	public class WindowsHelperBackend : Object, WindowsHelper {
+	public sealed class WindowsHelperBackend : Object, WindowsHelper {
 		public PrivilegeLevel level {
 			get;
 			construct;
@@ -49,7 +49,7 @@ namespace Frida {
 
 		public async void inject_library_file (uint pid, PathTemplate path_template, string entrypoint, string data,
 				string[] dependencies, uint id, Cancellable? cancellable) throws Error {
-			string path = path_template.expand (WindowsProcess.is_x64 (pid) ? "64" : "32");
+			string path = path_template.expand (arch_name_from_pid (pid));
 
 			string target_dependent_path;
 			if (level == ELEVATED) {
@@ -101,7 +101,33 @@ namespace Frida {
 		protected extern static void _free_inject_instance (void * inject_instance, out bool is_resident);
 	}
 
-	private class AssetDirectory {
+	public unowned string arch_name_from_pid (uint pid) throws Error {
+		switch (cpu_type_from_pid (pid)) {
+			case Gum.CpuType.IA32:
+				return "x86";
+			case Gum.CpuType.AMD64:
+				return "x86_64";
+			case Gum.CpuType.ARM64:
+				return "arm64";
+			default:
+				assert_not_reached ();
+		}
+	}
+
+	public Gum.CpuType cpu_type_from_pid (uint pid) throws Error {
+		try {
+			return Gum.Windows.cpu_type_from_pid (pid);
+		} catch (Gum.Error e) {
+			if (e is Gum.Error.NOT_FOUND)
+				throw new Error.PROCESS_NOT_FOUND ("Unable to find process with pid %u", pid);
+			else if (e is Gum.Error.PERMISSION_DENIED)
+				throw new Error.PERMISSION_DENIED ("Unable to access process with pid %u", pid);
+			else
+				throw new Error.NOT_SUPPORTED ("%s", e.message);
+		}
+	}
+
+	private sealed class AssetDirectory {
 		public File file {
 			get;
 			private set;
@@ -144,7 +170,7 @@ namespace Frida {
 		}
 	}
 
-	private class AssetBundle {
+	private sealed class AssetBundle {
 		public Gee.List<File> files {
 			get;
 			private set;
@@ -204,14 +230,6 @@ namespace Frida {
 				}
 			}
 		}
-	}
-
-	namespace WindowsSystem {
-		public extern static bool is_x64 ();
-	}
-
-	namespace WindowsProcess {
-		public extern static bool is_x64 (uint32 pid) throws Error;
 	}
 
 	namespace WaitHandleSource {

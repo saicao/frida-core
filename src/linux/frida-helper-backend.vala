@@ -1,5 +1,5 @@
 namespace Frida {
-	public class LinuxHelperBackend : Object, LinuxHelper {
+	public sealed class LinuxHelperBackend : Object, LinuxHelper {
 		public signal void idle ();
 
 		public bool is_idle {
@@ -597,7 +597,7 @@ namespace Frida {
 		}
 	}
 
-	private class SpawnedProcess : Object {
+	private sealed class SpawnedProcess : Object {
 		public signal void terminated ();
 		public signal void output (int fd, uint8[] data);
 
@@ -703,7 +703,7 @@ namespace Frida {
 		}
 	}
 
-	private class StdioPipes : Object {
+	private sealed class StdioPipes : Object {
 		public FileDescriptor input {
 			get;
 			construct;
@@ -734,7 +734,7 @@ namespace Frida {
 		}
 	}
 
-	private class ExecTransitionSession : SeizeSession {
+	private sealed class ExecTransitionSession : SeizeSession {
 		private ExecTransitionSession (uint pid) {
 			Object (pid: pid, on_init: SeizeSession.InitBehavior.CONTINUE);
 		}
@@ -753,10 +753,12 @@ namespace Frida {
 
 		public async void wait_for_exec (Cancellable? cancellable) throws Error, IOError {
 			yield wait_for_signal (TRAP, cancellable);
+			step ();
+			yield wait_for_signal (TRAP, cancellable);
 		}
 	}
 
-	private class PausedSyscallSession : SeizeSession {
+	private sealed class PausedSyscallSession : SeizeSession {
 		private State state = PENDING;
 
 		private enum State {
@@ -841,23 +843,23 @@ namespace Frida {
 
 	private const uint64 SOCK_CLOEXEC = 0x80000;
 
-	private class InjectSession : SeizeSession {
-		private static ProcMapsEntry local_libc;
+	private sealed class InjectSession : SeizeSession {
+		private static ProcMapsSoEntry local_libc;
 		private static uint64 mmap_offset;
 		private static uint64 munmap_offset;
 
 		private static string fallback_ld;
 		private static string fallback_libc;
 
-		private static ProcMapsEntry? local_android_ld;
+		private static ProcMapsSoEntry? local_android_ld;
 
 		static construct {
-			string libc_name = Gum.Process.query_libc_name ();
+			var libc = Gum.Process.get_libc_module ();
 			uint local_pid = Posix.getpid ();
-			local_libc = ProcMapsEntry.find_by_path (local_pid, libc_name);
+			local_libc = ProcMapsSoEntry.find_by_path (local_pid, libc.path);
 			assert (local_libc != null);
-			mmap_offset = (uint64) Gum.Module.find_export_by_name (libc_name, "mmap") - local_libc.base_address;
-			munmap_offset = (uint64) Gum.Module.find_export_by_name (libc_name, "munmap") - local_libc.base_address;
+			mmap_offset = (uint64) (uintptr) libc.find_export_by_name ("mmap") - local_libc.base_address;
+			munmap_offset = (uint64) (uintptr) libc.find_export_by_name ("munmap") - local_libc.base_address;
 
 			try {
 				var program = new Gum.ElfModule.from_file ("/proc/self/exe");
@@ -875,7 +877,7 @@ namespace Frida {
 			}
 
 #if ANDROID
-			local_android_ld = ProcMapsEntry.find_by_path (local_pid, fallback_ld);
+			local_android_ld = ProcMapsSoEntry.find_by_path (local_pid, fallback_ld);
 #endif
 		}
 
@@ -900,7 +902,7 @@ namespace Frida {
 			LoaderLayout loader_layout = compute_loader_layout (spec, fallback_address);
 
 			BootstrapResult bootstrap_result = yield bootstrap (loader_layout.size, cancellable);
-			var loader_base = (uint64) bootstrap_result.context.loader_base;
+			uint64 loader_base = (uintptr) bootstrap_result.context.allocation_base;
 
 			try {
 				unowned uint8[] loader_code = Frida.Data.HelperBackend.get_loader_bin_blob ().data;
@@ -915,15 +917,15 @@ namespace Frida {
 				loader_ctx.libc = (HelperLibcApi *) (loader_base + loader_layout.libc_api_offset);
 				write_memory (loader_base + loader_layout.ctx_offset, (uint8[]) &loader_ctx);
 				write_memory (loader_base + loader_layout.libc_api_offset, (uint8[]) &bootstrap_result.libc);
-				write_memory (loader_base + loader_layout.agent_entrypoint_offset, spec.entrypoint.data);
-				write_memory (loader_base + loader_layout.agent_data_offset, spec.data.data);
-				write_memory (loader_base + loader_layout.fallback_address_offset, fallback_address.data);
+				write_memory_string (loader_base + loader_layout.agent_entrypoint_offset, spec.entrypoint);
+				write_memory_string (loader_base + loader_layout.agent_data_offset, spec.data);
+				write_memory_string (loader_base + loader_layout.fallback_address_offset, fallback_address);
 
 				return yield launch_loader (FROM_SCRATCH, spec, bootstrap_result, null, fallback_address, loader_layout,
 					cancellable);
 			} catch (GLib.Error error) {
 				try {
-					yield deallocate_memory ((uint64) bootstrap_result.libc.munmap, loader_base, loader_layout.size,
+					yield deallocate_memory ((uintptr) bootstrap_result.libc.munmap, loader_base, loader_layout.size,
 						null);
 				} catch (GLib.Error e) {
 				}
@@ -940,11 +942,11 @@ namespace Frida {
 
 			string fallback_address = make_fallback_address ();
 			LoaderLayout loader_layout = compute_loader_layout (spec, fallback_address);
-			uint64 loader_base = (uint64) bootstrap_result.context.loader_base;
+			uint64 loader_base = (uintptr) bootstrap_result.context.allocation_base;
 			uint64 loader_ctrlfds_location = loader_base + loader_layout.ctx_offset;
 
 			if (bootstrap_result.context.enable_ctrlfds) {
-				var builder = new RemoteCallBuilder ((uint64) bootstrap_result.libc.socketpair, saved_regs);
+				var builder = new RemoteCallBuilder ((uintptr) bootstrap_result.libc.socketpair, saved_regs);
 				builder
 					.add_argument (Posix.AF_UNIX)
 					.add_argument (Posix.SOCK_STREAM | SOCK_CLOEXEC)
@@ -1014,9 +1016,10 @@ namespace Frida {
 			Future<RemoteAgent> future_agent =
 				establish_connection (launch, spec, bres, agent_ctrl, fallback_address, cancellable);
 
-			var loader_base = (uint64) bres.context.loader_base;
-
-			var call_builder = new RemoteCallBuilder (loader_base, saved_regs);
+			uint64 loader_base = (uintptr) bres.context.allocation_base;
+			GPRegs regs = saved_regs;
+			regs.stack_pointer = bres.allocated_stack.stack_root;
+			var call_builder = new RemoteCallBuilder (loader_base, regs);
 			call_builder.add_argument (loader_base + loader_layout.ctx_offset);
 			RemoteCall loader_call = call_builder.build (this);
 			RemoteCallResult loader_result = yield loader_call.execute (cancellable);
@@ -1072,42 +1075,78 @@ namespace Frida {
 			var result = new BootstrapResult ();
 
 			unowned uint8[] bootstrapper_code = Frida.Data.HelperBackend.get_bootstrapper_bin_blob ().data;
-			uint64 bootstrapper_base = 0;
 			size_t bootstrapper_size = round_size_to_page_size (bootstrapper_code.length);
+
+			size_t stack_size = 64 * 1024;
+
+			uint64 allocation_base = 0;
+			size_t allocation_size = size_t.max (bootstrapper_size, loader_size) + stack_size;
 
 			uint64 remote_mmap = 0;
 			uint64 remote_munmap = 0;
-			ProcMapsEntry? remote_libc = ProcMapsEntry.find_by_path (pid, local_libc.path);
+			ProcMapsSoEntry? remote_libc = ProcMapsSoEntry.find_by_path (pid, local_libc.path);
+#if ANDROID
+			bool same_libc = false;
+			if (remote_libc != null) {
+				bool same_device = remote_libc.identity.split (":")[0] == local_libc.identity.split (":")[0];
+				bool same_inode = remote_libc.identity.split (" ")[1] == local_libc.identity.split (" ")[1];
+				bool same_path = remote_libc.path == local_libc.path;
+				same_libc = same_device && same_inode && same_path;
+			}
+#else
 			bool same_libc = remote_libc != null && remote_libc.identity == local_libc.identity;
+#endif
 			if (same_libc) {
 				remote_mmap = remote_libc.base_address + mmap_offset;
 				remote_munmap = remote_libc.base_address + munmap_offset;
 			}
 
 			if (remote_mmap != 0) {
-				bootstrapper_base = yield allocate_memory (remote_mmap, bootstrapper_size,
+				allocation_base = yield allocate_memory (remote_mmap, allocation_size,
 					Posix.PROT_READ | Posix.PROT_WRITE | Posix.PROT_EXEC, cancellable);
+			} else {
+				var code_swap = yield new ProcessCodeSwapScope (this, bootstrapper_code, cancellable);
+				uint64 code_start = code_swap.code_start;
+				uint64 code_end = code_start + bootstrapper_size;
+				maybe_fixup_helper_code (code_start, bootstrapper_code);
+
+				var call_builder = new RemoteCallBuilder (code_start, saved_regs);
+
+				uint64 bootstrap_ctx_location;
+				call_builder.reserve_stack_space (sizeof (HelperBootstrapContext), out bootstrap_ctx_location);
+
+				var bootstrap_ctx = HelperBootstrapContext ();
+				bootstrap_ctx.allocation_size = allocation_size;
+				write_memory (bootstrap_ctx_location, (uint8[]) &bootstrap_ctx);
+
+				call_builder.add_argument (bootstrap_ctx_location);
+
+				RemoteCallResult bootstrap_result = yield call_builder.build (this).execute (cancellable);
+				var status = (HelperBootstrapStatus) bootstrap_result.return_value;
+				if (bootstrap_result.status != COMPLETED || status != ALLOCATION_SUCCESS)
+					throw_bootstrap_error (bootstrap_result, status, code_start, code_end);
+
+				uint8[] output_context = read_memory (bootstrap_ctx_location, sizeof (HelperBootstrapContext));
+				Memory.copy (&bootstrap_ctx, output_context, output_context.length);
+
+				allocation_base = (uintptr) bootstrap_ctx.allocation_base;
+				code_swap.revert ();
 			}
 
+			result.allocated_stack.stack_base = (void *) (allocation_base + allocation_size - stack_size);
+			result.allocated_stack.stack_size = stack_size;
+
 			try {
-				if (bootstrapper_base != 0)
-					write_memory (bootstrapper_base, bootstrapper_code);
+				write_memory (allocation_base, bootstrapper_code);
+				maybe_fixup_helper_code (allocation_base, bootstrapper_code);
+				uint64 code_start = allocation_base;
+				uint64 code_end = code_start + bootstrapper_size;
 
 				HelperBootstrapStatus status = SUCCESS;
 				do {
-					uint64 code_start;
-					ProcessCodeSwapScope? code_swap = null;
-					if (bootstrapper_base != 0) {
-						code_start = bootstrapper_base;
-					} else {
-						code_swap = yield new ProcessCodeSwapScope (this, bootstrapper_code, cancellable);
-						code_start = code_swap.code_start;
-					}
-					uint64 code_end = code_start + bootstrapper_size;
-
-					maybe_fixup_helper_code (code_start, bootstrapper_code);
-
-					var call_builder = new RemoteCallBuilder (code_start, saved_regs);
+					GPRegs regs = saved_regs;
+					regs.stack_pointer = result.allocated_stack.stack_root;
+					var call_builder = new RemoteCallBuilder (code_start, regs);
 
 					unowned uint8[] fallback_ld_data = fallback_ld.data;
 					unowned uint8[] fallback_libc_data = fallback_libc.data;
@@ -1120,10 +1159,11 @@ namespace Frida {
 						.reserve_stack_space (fallback_libc_data.length + 1, out fallback_libc_location);
 
 					var bootstrap_ctx = HelperBootstrapContext ();
+					bootstrap_ctx.allocation_base = (void *) allocation_base;
+					bootstrap_ctx.allocation_size = allocation_size;
 					bootstrap_ctx.page_size = Gum.query_page_size ();
 					bootstrap_ctx.fallback_ld = (string *) fallback_ld_location;
 					bootstrap_ctx.fallback_libc = (string *) fallback_libc_location;
-					bootstrap_ctx.loader_size = loader_size;
 					bootstrap_ctx.enable_ctrlfds = PidFileDescriptor.getfd_is_supported ();
 					bootstrap_ctx.libc = (HelperLibcApi *) libc_api_location;
 					write_memory (bootstrap_ctx_location, (uint8[]) &bootstrap_ctx);
@@ -1144,26 +1184,8 @@ namespace Frida {
 						status = (HelperBootstrapStatus) bootstrap_result.return_value;
 					}
 
-					if (!(bootstrap_result.status == COMPLETED && (status == SUCCESS || status == TOO_EARLY))) {
-						if (bootstrap_result.status == COMPLETED) {
-							throw new Error.NOT_SUPPORTED ("Bootstrapper failed due to '%s'; " +
-								"please file a bug",
-								Marshal.enum_to_nick<HelperBootstrapStatus> (status));
-						} else {
-							uint64 pc = bootstrap_result.regs.program_counter;
-							if (pc >= code_start && pc < code_end) {
-								throw new Error.NOT_SUPPORTED (
-									"Bootstrapper crashed with signal %d at offset 0x%x; please file a bug\n%s",
-									bootstrap_result.stop_signal,
-									(uint) (pc - code_start),
-									bootstrap_result.regs.to_string ());
-							} else {
-								throw new Error.NOT_SUPPORTED ("Bootstrapper crashed with signal %d; please file a bug\n%s",
-									bootstrap_result.stop_signal,
-									bootstrap_result.regs.to_string ());
-							}
-						}
-					}
+					if (!(bootstrap_result.status == COMPLETED && (status == SUCCESS || status == TOO_EARLY)))
+						throw_bootstrap_error (bootstrap_result, status, code_start, code_end);
 
 					uint8[] output_context = read_memory (bootstrap_ctx_location, sizeof (HelperBootstrapContext));
 					Memory.copy (&result.context, output_context, output_context.length);
@@ -1174,7 +1196,7 @@ namespace Frida {
 					result.context.libc = &result.libc;
 
 					if (result.context.rtld_flavor == ANDROID && result.libc.dlopen == null) {
-						ProcMapsEntry? remote_ld = ProcMapsEntry.find_by_address (pid, (uintptr) result.context.rtld_base);
+						ProcMapsSoEntry? remote_ld = ProcMapsSoEntry.find_by_address (pid, (uintptr) result.context.rtld_base);
 						bool same_ld = remote_ld != null && local_android_ld != null && remote_ld.identity == local_android_ld.identity;
 						if (!same_ld)
 							throw new Error.NOT_SUPPORTED ("Unable to locate Android dynamic linker; please file a bug");
@@ -1184,19 +1206,13 @@ namespace Frida {
 						result.libc.dlerror = rebase_pointer ((uintptr) dlerror, local_android_ld, remote_ld);
 					}
 
-					if (code_swap != null)
-						code_swap.revert ();
-
 					if (status == TOO_EARLY)
-						yield resume_until_execution_reaches ((uint64) result.context.r_brk, cancellable);
+						yield resume_until_execution_reaches ((uintptr) result.context.r_brk, cancellable);
 				} while (status == TOO_EARLY);
-
-				if (bootstrapper_base != 0)
-					yield deallocate_memory (remote_munmap, bootstrapper_base, bootstrapper_size, cancellable);
 			} catch (GLib.Error e) {
-				if (bootstrapper_base != 0) {
+				if (remote_munmap != 0) {
 					try {
-						yield deallocate_memory (remote_munmap, bootstrapper_base, bootstrapper_size, null);
+						yield deallocate_memory (remote_munmap, allocation_base, allocation_size, null);
 					} catch (GLib.Error e) {
 					}
 				}
@@ -1207,7 +1223,30 @@ namespace Frida {
 			return result;
 		}
 
-		private static void * rebase_pointer (uintptr local_ptr, ProcMapsEntry local_module, ProcMapsEntry remote_module) {
+		[NoReturn]
+		private static void throw_bootstrap_error (RemoteCallResult bootstrap_result, HelperBootstrapStatus status,
+				uint64 code_start, uint64 code_end) throws Error {
+			if (bootstrap_result.status == COMPLETED) {
+				throw new Error.NOT_SUPPORTED ("Bootstrapper failed due to '%s'; " +
+					"please file a bug",
+					Marshal.enum_to_nick<HelperBootstrapStatus> (status));
+			} else {
+				uint64 pc = bootstrap_result.regs.program_counter;
+				if (pc >= code_start && pc < code_end) {
+					throw new Error.NOT_SUPPORTED (
+						"Bootstrapper crashed with signal %d at offset 0x%x; please file a bug\n%s",
+						bootstrap_result.stop_signal,
+						(uint) (pc - code_start),
+						bootstrap_result.regs.to_string ());
+				} else {
+					throw new Error.NOT_SUPPORTED ("Bootstrapper crashed with signal %d; please file a bug\n%s",
+						bootstrap_result.stop_signal,
+						bootstrap_result.regs.to_string ());
+				}
+			}
+		}
+
+		private static void * rebase_pointer (uintptr local_ptr, ProcMapsSoEntry local_module, ProcMapsSoEntry remote_module) {
 			var offset = local_ptr - local_module.base_address;
 			return (void *) (remote_module.base_address + offset);
 		}
@@ -1314,7 +1353,7 @@ namespace Frida {
 		}
 	}
 
-	public class InjectSpec {
+	public sealed class InjectSpec {
 		public FileDescriptorBased library_so {
 			get;
 			private set;
@@ -1353,7 +1392,7 @@ namespace Frida {
 		}
 	}
 
-	private class CleanupSession : SeizeSession {
+	private sealed class CleanupSession : SeizeSession {
 		private CleanupSession (uint pid) {
 			Object (pid: pid);
 		}
@@ -1371,12 +1410,12 @@ namespace Frida {
 		}
 
 		public async void deallocate (BootstrapResult bres, Cancellable? cancellable) throws Error, IOError {
-			yield deallocate_memory ((uint64) bres.libc.munmap, (uint64) bres.context.loader_base, bres.context.loader_size,
-				cancellable);
+			yield deallocate_memory ((uintptr) bres.libc.munmap, (uintptr) bres.context.allocation_base,
+				bres.context.allocation_size, cancellable);
 		}
 	}
 
-	private class ThreadSuspendSession : SeizeSession {
+	private sealed class ThreadSuspendSession : SeizeSession {
 		private ThreadSuspendSession (uint pid, uint tid) {
 			Object (pid: pid, tid: tid);
 		}
@@ -1394,14 +1433,28 @@ namespace Frida {
 		}
 	}
 
-	private class BootstrapResult {
+	private struct AllocatedStack {
+		public void * stack_base;
+		public size_t stack_size;
+
+		public uint64 stack_root {
+			get {
+				return (uint64) stack_base + (uint64) stack_size;
+			}
+		}
+	}
+
+
+	private sealed class BootstrapResult {
 		public HelperBootstrapContext context;
 		public HelperLibcApi libc;
+		public AllocatedStack allocated_stack;
 
 		public BootstrapResult clone () {
 			var res = new BootstrapResult ();
 			res.context = context;
 			res.libc = libc;
+			res.allocated_stack = allocated_stack;
 			return res;
 		}
 	}
@@ -1411,7 +1464,7 @@ namespace Frida {
 		RELAUNCH
 	}
 
-	private class RemoteAgent : Object {
+	private sealed class RemoteAgent : Object {
 		public uint pid {
 			get;
 			construct;
@@ -1672,23 +1725,26 @@ namespace Frida {
 	}
 
 	protected enum HelperBootstrapStatus {
+		ALLOCATION_SUCCESS,
+		ALLOCATION_ERROR,
+
 		SUCCESS,
 		AUXV_NOT_FOUND,
 		TOO_EARLY,
 		LIBC_LOAD_ERROR,
 		LIBC_UNSUPPORTED,
-		MMAP_ERROR,
 	}
 
 	protected struct HelperBootstrapContext {
+		void * allocation_base;
+		size_t allocation_size;
+
 		size_t page_size;
 		string * fallback_ld;
 		string * fallback_libc;
 		HelperRtldFlavor rtld_flavor;
 		void * rtld_base;
 		void * r_brk;
-		size_t loader_size;
-		void * loader_base;
 		bool enable_ctrlfds;
 		int ctrlfds[2];
 		HelperLibcApi * libc;
@@ -1906,6 +1962,10 @@ namespace Frida {
 			try {
 				yield suspend (null);
 				close ();
+			} catch (Error e) {
+				// If the process is gone, then there's no point in retrying.
+				if (e is Error.PROCESS_NOT_FOUND)
+					attach_state = ALREADY_ATTACHED;
 			} catch (GLib.Error e) {
 			}
 		}
@@ -1938,15 +1998,15 @@ namespace Frida {
 #elif ARM
 			target_address &= ~1;
 
-			uint32 arm_breakpoint_val = 0xe7f001f0U;
-			uint16 thumb_breakpoint_val = 0xde01;
+			uint32 arm_breakpoint_val = (0xe7f001f0U).to_little_endian ();
+			uint16 thumb_breakpoint_val = ((uint16) 0xde01).to_little_endian ();
 			bool is_thumb = (target & 1) != 0;
 			if (is_thumb)
 				breakpoint_data = (uint8[]) &thumb_breakpoint_val;
 			else
 				breakpoint_data = (uint8[]) &arm_breakpoint_val;
 #elif ARM64
-			uint32 breakpoint_val = 0xd4200000U;
+			uint32 breakpoint_val = (0xd4200000U).to_little_endian ();
 			breakpoint_data = (uint8[]) &breakpoint_val;
 #elif MIPS
 			uint32 breakpoint_val = 0x0000000dU;
@@ -2181,6 +2241,11 @@ namespace Frida {
 			}
 		}
 
+		public void write_memory_string (uint64 address, string str) throws Error {
+			unowned uint8[] data = str.data;
+			write_memory (address, data[:data.length + 1]);
+		}
+
 		private static ssize_t process_vm_readv_impl (uint pid,
 				[CCode (array_length_type = "unsigned long")]
 				Posix.iovector[] local_iov,
@@ -2207,7 +2272,7 @@ namespace Frida {
 		ALREADY_ATTACHED,
 	}
 
-	private class ProcessCodeSwapScope {
+	private sealed class ProcessCodeSwapScope {
 		private State state = INACTIVE;
 
 		private SeizeSession session;
@@ -2225,6 +2290,9 @@ namespace Frida {
 			this.session = session;
 
 			Gum.Linux.enumerate_ranges ((Posix.pid_t) session.pid, READ | EXECUTE, d => {
+				unowned Gum.FileMapping? file = d.file;
+				if (file != null && file.path.has_prefix ("memfd:"))
+					return true;
 				if (d.range.size >= code.length) {
 					code_start = d.range.base_address + d.range.size - round_size_to_page_size (code.length);
 					code_end = code_start + code.length;
@@ -2261,7 +2329,7 @@ namespace Frida {
 		}
 	}
 
-	private class ThreadSuspendScope {
+	private sealed class ThreadSuspendScope {
 		private State state = INACTIVE;
 
 		private uint pid;
@@ -2359,7 +2427,7 @@ namespace Frida {
 		}
 	}
 
-	private class RemoteCallBuilder {
+	private sealed class RemoteCallBuilder {
 		private uint64 target;
 		private uint64[] args = {};
 		private GPRegs regs;
@@ -2410,7 +2478,7 @@ namespace Frida {
 		}
 	}
 
-	private class RemoteCall {
+	private sealed class RemoteCall {
 		private SeizeSession session;
 		private uint64 target;
 		private uint64[] args;
@@ -2592,7 +2660,7 @@ namespace Frida {
 		}
 	}
 
-	private class RemoteCallResult {
+	private sealed class RemoteCallResult {
 		public RemoteCallStatus status;
 		public int stop_signal;
 		public uint64 return_value;
@@ -2984,7 +3052,7 @@ namespace Frida {
 				throw new Error.PERMISSION_DENIED (
 					"Unable to access process with pid %u due to system restrictions;" +
 					" try `sudo sysctl kernel.yama.ptrace_scope=0`, or run Frida as root",
-					pid, strerror (err));
+					pid);
 			default:
 				throw new Error.NOT_SUPPORTED ("Unable to perform ptrace %s: %s",
 					Marshal.enum_to_nick<PtraceRequest> (request),
@@ -3099,112 +3167,8 @@ namespace Frida {
 		return Linux.syscall (SysCall.tgkill, tgid, tid, sig);
 	}
 
-	private uint linux_major = 0;
-	private uint linux_minor = 0;
-
-	public bool check_kernel_version (uint major, uint minor) {
-		if (linux_major == 0) {
-			var name = Posix.utsname ();
-			name.release.scanf ("%u.%u", out linux_major, out linux_minor);
-		}
-
-		return (linux_major == major && linux_minor >= minor) || linux_major > major;
-	}
 
 	public extern bool _syscall_satisfies (int syscall_id, LinuxSyscall mask);
-
-	public class FileDescriptor : Object, FileDescriptorBased {
-		public int handle;
-
-		public FileDescriptor (int handle) {
-			this.handle = handle;
-		}
-
-		~FileDescriptor () {
-			if (handle != -1)
-				Posix.close (handle);
-		}
-
-		public int steal () {
-			int result = handle;
-			handle = -1;
-			return result;
-		}
-
-		public int get_fd () {
-			return handle;
-		}
-	}
-
-	public class PidFileDescriptor : FileDescriptor {
-		private uint pid;
-
-		private PidFileDescriptor (int fd, uint pid) {
-			base (fd);
-			this.pid = pid;
-		}
-
-		public static bool is_supported () {
-			return check_kernel_version (5, 3);
-		}
-
-		public static bool getfd_is_supported () {
-			return check_kernel_version (5, 6);
-		}
-
-		public static PidFileDescriptor from_pid (uint pid) throws Error {
-			int fd = pidfd_open (pid, 0);
-			if (fd == -1)
-				throw_pidfd_error (pid, errno);
-			return new PidFileDescriptor (fd, pid);
-		}
-
-		public FileDescriptor getfd (int targetfd) throws Error {
-			int fd = pidfd_getfd (handle, targetfd, 0);
-			if (fd == -1)
-				throw_pidfd_error (pid, errno);
-			return new FileDescriptor (fd);
-		}
-
-		private static int pidfd_open (uint pid, uint flags) {
-			return Linux.syscall (SysCall.pidfd_open, pid, flags);
-		}
-
-		private static int pidfd_getfd (int pidfd, int targetfd, uint flags) {
-			return Linux.syscall (SysCall.pidfd_getfd, pidfd, targetfd, flags);
-		}
-
-		[NoReturn]
-		private static void throw_pidfd_error (uint pid, int err) throws Error {
-			switch (err) {
-				case Posix.ESRCH:
-					throw new Error.PROCESS_NOT_FOUND ("Process not found");
-				case Posix.EPERM:
-					throw new Error.PERMISSION_DENIED ("Unable to use pidfd for pid %u: %s", pid, strerror (err));
-				default:
-					throw new Error.NOT_SUPPORTED ("Unable to use pidfd for pid %u: %s", pid, strerror (err));
-			}
-		}
-	}
-
-	namespace MemoryFileDescriptor {
-		public bool is_supported () {
-			return check_kernel_version (3, 17);
-		}
-
-		public static FileDescriptor from_bytes (string name, Bytes bytes) {
-			assert (is_supported ());
-
-			var fd = new FileDescriptor (memfd_create (name, 0));
-			unowned uint8[] data = bytes.get_data ();
-			Posix.write (fd.handle, data, data.length);
-			return fd;
-		}
-
-		private int memfd_create (string name, uint flags) {
-			return Linux.syscall (SysCall.memfd_create, name, flags);
-		}
-	}
 
 	private void make_pty (out FileDescriptor read, out FileDescriptor write) throws Error {
 #if HAVE_OPENPTY
@@ -3250,38 +3214,87 @@ namespace Frida {
 	}
 #endif
 
-	private class ProcMapsEntry {
+	private sealed class ProcMapsSoEntry {
 		public uint64 base_address;
 		public string path;
 		public string identity;
 
-		private ProcMapsEntry (uint64 base_address, string path, string identity) {
+		private ProcMapsSoEntry (uint64 base_address, string path, string identity) {
 			this.base_address = base_address;
 			this.path = path;
 			this.identity = identity;
 		}
 
-		public static ProcMapsEntry? find_by_address (uint pid, uint64 address) {
+		public static ProcMapsSoEntry? find_by_address (uint pid, uint64 address) {
 			var iter = MapsIter.for_pid (pid);
 			while (iter.next ()) {
 				uint64 start = iter.start_address;
 				uint64 end = iter.end_address;
 				if (address >= start && address < end)
-					return new ProcMapsEntry (start, iter.path, iter.identity);
+					return new ProcMapsSoEntry (start, iter.path, iter.identity);
 			}
 
 			return null;
 		}
 
-		public static ProcMapsEntry? find_by_path (uint pid, string path) {
+		public static ProcMapsSoEntry? find_by_path (uint pid, string path) {
+			var candidates = new Gee.ArrayList<Candidate> ();
+			Candidate? latest_candidate = null;
 			var iter = MapsIter.for_pid (pid);
+#if ANDROID
+			unowned string libc_path = Gum.Process.get_libc_module ().path;
+#endif
 			while (iter.next ()) {
-				string candidate_path = iter.path;
-				if (candidate_path == path)
-					return new ProcMapsEntry (iter.start_address, candidate_path, iter.identity);
+				string current_path = iter.path;
+				if (current_path == "[page size compat]")
+					continue;
+				if (current_path != path) {
+					latest_candidate = null;
+					continue;
+				}
+
+				string flags = iter.flags;
+
+#if ANDROID
+				if (current_path == libc_path && flags[3] == 's')
+					continue;
+#endif
+
+				if (iter.file_offset == 0) {
+					latest_candidate = new Candidate () {
+						entry = new ProcMapsSoEntry (iter.start_address, current_path, iter.identity),
+						total_ranges = 0,
+						executable_ranges = 0,
+					};
+					candidates.add (latest_candidate);
+				}
+
+				if (latest_candidate != null) {
+					latest_candidate.total_ranges++;
+					if (flags[2] == 'x')
+						latest_candidate.executable_ranges++;
+				}
 			}
 
-			return null;
+			candidates.sort ((a, b) => b.score () - a.score ());
+
+			if (candidates.is_empty)
+				return null;
+
+			return candidates.first ().entry;
+		}
+
+		private class Candidate {
+			public ProcMapsSoEntry entry;
+			public uint total_ranges;
+			public uint executable_ranges;
+
+			public int score () {
+				int result = (int) total_ranges;
+				if (executable_ranges == 0)
+					result = -result;
+				return result;
+			}
 		}
 
 		private class MapsIter {
@@ -3301,15 +3314,27 @@ namespace Frida {
 				}
 			}
 
-			public string identity {
+			public string flags {
 				owned get {
 					return info.fetch (3);
 				}
 			}
 
+			public uint64 file_offset {
+				get {
+					return uint64.parse (info.fetch (4), 16);
+				}
+			}
+
+			public string identity {
+				owned get {
+					return info.fetch (5);
+				}
+			}
+
 			public string path {
 				owned get {
-					return info.fetch (4);
+					return info.fetch (6);
 				}
 			}
 
@@ -3324,8 +3349,8 @@ namespace Frida {
 					return;
 				}
 
-				if (!/^([0-9a-f]+)-([0-9a-f]+) \S{4} [0-9a-f]+ ([0-9a-f]{2,}:[0-9a-f]{2,} \d+) +([^\n]+)$/m.match (contents,
-						0, out info)) {
+				if (!/^([0-9a-f]+)-([0-9a-f]+) (\S{4}) ([0-9a-f]+) ([0-9a-f]{2,}:[0-9a-f]{2,} \d+) +([^\n]+)$/m.match (
+						contents, 0, out info)) {
 					assert_not_reached ();
 				}
 			}

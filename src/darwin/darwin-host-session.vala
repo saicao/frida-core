@@ -1,98 +1,24 @@
 namespace Frida {
-	public class DarwinHostSessionBackend : Object, HostSessionBackend {
-		private DarwinHostSessionProvider local_provider;
-
-		public async void start (Cancellable? cancellable) throws IOError {
-			assert (local_provider == null);
-			local_provider = new DarwinHostSessionProvider ();
-			provider_available (local_provider);
-		}
-
-		public async void stop (Cancellable? cancellable) throws IOError {
-			assert (local_provider != null);
-			provider_unavailable (local_provider);
-			yield local_provider.close (cancellable);
-			local_provider = null;
+	public sealed class DarwinHostSessionBackend : LocalHostSessionBackend {
+		protected override LocalHostSessionProvider make_provider () {
+			return new DarwinHostSessionProvider ();
 		}
 	}
 
-	public class DarwinHostSessionProvider : Object, HostSessionProvider {
-		public string id {
-			get { return "local"; }
-		}
-
-		public string name {
-			get { return "Local System"; }
-		}
-
-		public Variant? icon {
-			get { return _icon; }
-		}
-		private Variant? _icon;
-
-		public HostSessionProviderKind kind {
-			get { return HostSessionProviderKind.LOCAL; }
-		}
-
-		private DarwinHostSession host_session;
-
-		construct {
-			_icon = _try_extract_icon ();
-		}
-
-		public async void close (Cancellable? cancellable) throws IOError {
-			if (host_session == null)
-				return;
-			host_session.agent_session_detached.disconnect (on_agent_session_detached);
-			yield host_session.close (cancellable);
-			host_session = null;
-		}
-
-		public async HostSession create (HostSessionOptions? options, Cancellable? cancellable) throws Error, IOError {
-			if (host_session != null)
-				throw new Error.INVALID_OPERATION ("Already created");
-
+	public sealed class DarwinHostSessionProvider : LocalHostSessionProvider {
+		protected override LocalHostSession make_host_session (HostSessionOptions? options) throws Error {
 			var tempdir = new TemporaryDirectory ();
-
-			host_session = new DarwinHostSession (new DarwinHelperProcess (tempdir), tempdir);
-			host_session.agent_session_detached.connect (on_agent_session_detached);
-
-			return host_session;
+			return new DarwinHostSession (new DarwinHelperProcess (tempdir), tempdir);
 		}
 
-		public async void destroy (HostSession session, Cancellable? cancellable) throws Error, IOError {
-			if (session != host_session)
-				throw new Error.INVALID_ARGUMENT ("Invalid host session");
-
-			host_session.agent_session_detached.disconnect (on_agent_session_detached);
-
-			yield host_session.close (cancellable);
-			host_session = null;
-		}
-
-		public async AgentSession link_agent_session (HostSession host_session, AgentSessionId id, AgentMessageSink sink,
-				Cancellable? cancellable) throws Error, IOError {
-			if (host_session != this.host_session)
-				throw new Error.INVALID_ARGUMENT ("Invalid host session");
-
-			return yield this.host_session.link_agent_session (id, sink, cancellable);
-		}
-
-		public void unlink_agent_session (HostSession host_session, AgentSessionId id) {
-			if (host_session != this.host_session)
-				return;
-
-			this.host_session.unlink_agent_session (id);
-		}
-
-		private void on_agent_session_detached (AgentSessionId id, SessionDetachReason reason, CrashInfo crash) {
-			agent_session_detached (id, reason, crash);
+		protected override Variant? load_icon () {
+			return _try_extract_icon ();
 		}
 
 		public extern static Variant? _try_extract_icon ();
 	}
 
-	public class DarwinHostSession : BaseDBusHostSession {
+	public sealed class DarwinHostSession : LocalHostSession {
 		public DarwinHelper helper {
 			get;
 			construct;
@@ -410,7 +336,7 @@ namespace Frida {
 	}
 
 #if IOS || TVOS
-	private class FruitController : Object, MappedAgentContainer {
+	private sealed class FruitController : Object, MappedAgentContainer {
 		public signal void spawn_added (HostSpawnInfo info);
 		public signal void spawn_removed (HostSpawnInfo info);
 		public signal void process_crashed (CrashInfo crash);
@@ -815,7 +741,7 @@ namespace Frida {
 			crash_deliveries.unset (delivery.pid);
 		}
 
-		private class CrashDelivery : Object {
+		private sealed class CrashDelivery : Object {
 			public signal void expired ();
 
 			public uint pid {
@@ -882,7 +808,7 @@ namespace Frida {
 
 	private delegate void FoundMappedAgentFunc (MappedAgent agent);
 
-	private class MappedAgent {
+	private sealed class MappedAgent {
 		public uint id {
 			get;
 			private set;
@@ -905,7 +831,7 @@ namespace Frida {
 		}
 	}
 
-	private class LaunchdAgent : InternalAgent {
+	private sealed class LaunchdAgent : InternalAgent {
 		public signal void app_launch_started (string identifier, uint pid);
 		public signal void app_launch_completed (string identifier, uint pid, GLib.Error? error);
 		public signal void spawn_preparation_started (HostSpawnInfo info);
@@ -933,27 +859,28 @@ namespace Frida {
 		}
 
 		public async void prepare_for_launch (string identifier, Cancellable? cancellable) throws Error, IOError {
-			yield call ("prepareForLaunch", new Json.Node[] { new Json.Node.alloc ().init_string (identifier) }, cancellable);
+			yield call ("prepareForLaunch", new Json.Node[] { new Json.Node.alloc ().init_string (identifier) }, null,
+				cancellable);
 		}
 
 		public async void cancel_launch (string identifier, Cancellable? cancellable) throws Error, IOError {
-			yield call ("cancelLaunch", new Json.Node[] { new Json.Node.alloc ().init_string (identifier) }, cancellable);
+			yield call ("cancelLaunch", new Json.Node[] { new Json.Node.alloc ().init_string (identifier) }, null, cancellable);
 		}
 
 		public async void enable_spawn_gating (Cancellable? cancellable) throws Error, IOError {
-			yield call ("enableSpawnGating", new Json.Node[] {}, cancellable);
+			yield call ("enableSpawnGating", new Json.Node[] {}, null, cancellable);
 		}
 
 		public async void disable_spawn_gating (Cancellable? cancellable) throws Error, IOError {
-			yield call ("disableSpawnGating", new Json.Node[] {}, cancellable);
+			yield call ("disableSpawnGating", new Json.Node[] {}, null, cancellable);
 		}
 
 		public async void claim_process (uint pid, Cancellable? cancellable) throws Error, IOError {
-			yield call ("claimProcess", new Json.Node[] { new Json.Node.alloc ().init_int (pid) }, cancellable);
+			yield call ("claimProcess", new Json.Node[] { new Json.Node.alloc ().init_int (pid) }, null, cancellable);
 		}
 
 		public async void unclaim_process (uint pid, Cancellable? cancellable) throws Error, IOError {
-			yield call ("unclaimProcess", new Json.Node[] { new Json.Node.alloc ().init_int (pid) }, cancellable);
+			yield call ("unclaimProcess", new Json.Node[] { new Json.Node.alloc ().init_int (pid) }, null, cancellable);
 		}
 
 		protected override void on_event (string type, Json.Array event) {
@@ -1014,7 +941,7 @@ namespace Frida {
 		}
 	}
 
-	private class XpcProxyAgent : InternalAgent {
+	private sealed class XpcProxyAgent : InternalAgent {
 		public string identifier {
 			get;
 			construct;
@@ -1056,7 +983,7 @@ namespace Frida {
 		}
 	}
 
-	private class ReportCrashAgent : InternalAgent {
+	private sealed class ReportCrashAgent : InternalAgent {
 		public signal void crash_detected (uint pid);
 		public signal void crash_received (CrashInfo crash);
 
@@ -1288,7 +1215,7 @@ namespace Frida {
 		}
 	}
 
-	private class OSAnalyticsAgent : InternalAgent {
+	private sealed class OSAnalyticsAgent : InternalAgent {
 		public uint pid {
 			get;
 			construct;

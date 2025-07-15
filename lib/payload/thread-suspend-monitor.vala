@@ -1,6 +1,6 @@
 namespace Frida {
 #if DARWIN
-	public class ThreadSuspendMonitor : Object {
+	public sealed class ThreadSuspendMonitor : Object {
 		public weak ProcessInvader invader {
 			get;
 			construct;
@@ -26,9 +26,10 @@ namespace Frida {
 		construct {
 			var interceptor = Gum.Interceptor.obtain ();
 
-			task_threads = (TaskThreadsFunc) Gum.Module.find_export_by_name (LIBSYSTEM_KERNEL, "task_threads");
-			thread_suspend = (ThreadSuspendFunc) Gum.Module.find_export_by_name (LIBSYSTEM_KERNEL, "thread_suspend");
-			thread_resume = (ThreadResumeFunc) Gum.Module.find_export_by_name (LIBSYSTEM_KERNEL, "thread_resume");
+			var kernel = Gum.Process.find_module_by_name (LIBSYSTEM_KERNEL);
+			task_threads = (TaskThreadsFunc) kernel.find_export_by_name ("task_threads");
+			thread_suspend = (ThreadSuspendFunc) kernel.find_export_by_name ("thread_suspend");
+			thread_resume = (ThreadResumeFunc) kernel.find_export_by_name ("thread_resume");
 
 			interceptor.replace ((void *) task_threads, (void *) replacement_task_threads, this);
 			interceptor.replace ((void *) thread_suspend, (void *) replacement_thread_suspend, this);
@@ -84,14 +85,19 @@ namespace Frida {
 			if (script_backend == null || thread_id == caller_thread_id)
 				return thread_suspend (thread_id);
 
-			int result = 0;
+			var interceptor = Gum.Interceptor.obtain ();
 
+			int result = 0;
 			while (true) {
 				script_backend.with_lock_held (() => {
-					result = thread_suspend (thread_id);
+					interceptor.with_lock_held (() => {
+						Gum.Cloak.with_lock_held (() => {
+							result = thread_suspend (thread_id);
+						});
+					});
 				});
 
-				if (result != 0 || !script_backend.is_locked ())
+				if (result != 0 || (!script_backend.is_locked () && !Gum.Cloak.is_locked () && !interceptor.is_locked ()))
 					break;
 
 				if (thread_resume (thread_id) != 0)
@@ -125,7 +131,7 @@ namespace Frida {
 		}
 	}
 #else
-	public class ThreadSuspendMonitor : Object {
+	public sealed class ThreadSuspendMonitor : Object {
 		public weak ProcessInvader invader {
 			get;
 			construct;

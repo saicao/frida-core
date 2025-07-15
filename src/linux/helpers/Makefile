@@ -1,17 +1,22 @@
-FRIDA_MONOREPO ?= ../../../..
+top_srcdir := ../../..
+releng := $(top_srcdir)/releng
+
+BUILDDIR ?= $(top_srcdir)/build
+MESON ?= $(releng)/meson/meson.py
 
 ifdef FRIDA_HOST
-host_os := $(shell echo $(FRIDA_HOST) | cut -f1 -d"-")
-host_arch := $(shell echo $(FRIDA_HOST) | cut -f2 -d"-")
+host_machine := $(FRIDA_HOST)
 else
-host_os := $(shell $(FRIDA_MONOREPO)/releng/detect-os.sh)
-host_arch := $(shell $(FRIDA_MONOREPO)/releng/detect-arch.sh)
+host_machine := $(shell basename $$(ls -1 $(BUILDDIR)/frida-linux-*.txt | tail -1) | cut -d"." -f1 | cut -d"-" -f2-)
 endif
+host_arch := $(shell echo $(host_machine) | cut -d"-" -f2)
 
-build: $(FRIDA_MONOREPO)/build/frida*-$(host_os)-$(host_arch).txt ext/linux/tools/include/nolibc/nolibc.h
+crossfile := $(BUILDDIR)/frida-$(host_machine).txt
+
+build: ext/linux/tools/include/nolibc/nolibc.h
 	rm -rf build
-	meson setup --cross-file $< -Db_lto=true build
-	meson compile -C build
+	$(MESON) setup --cross-file $(crossfile) -Db_lto=true build
+	$(MESON) compile -C build
 	cp build/bootstrapper.bin bootstrapper-$(host_arch).bin
 	cp build/loader.bin loader-$(host_arch).bin
 

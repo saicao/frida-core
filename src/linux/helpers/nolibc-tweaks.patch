@@ -197,20 +197,40 @@ diff --git a/tools/include/nolibc/std.h b/tools/include/nolibc/std.h
 index 1747ae125..5f30e6e0c 100644
 --- a/tools/include/nolibc/std.h
 +++ b/tools/include/nolibc/std.h
-@@ -25,25 +25,53 @@ typedef unsigned short     uint16_t;
+@@ -25,25 +25,71 @@ typedef unsigned short     uint16_t;
  typedef   signed short      int16_t;
  typedef unsigned int       uint32_t;
  typedef   signed int        int32_t;
 -typedef unsigned long long uint64_t;
 -typedef   signed long long  int64_t;
 +#if defined(__x86_64__) || defined(__aarch64__) || defined(__mips64) || defined(__riscv)
++#if defined(__ILP32__)
++typedef unsigned long long uint64_t;
++typedef   signed long long  int64_t;
++#else
 +typedef unsigned long      uint64_t;
 +typedef   signed long       int64_t;
++#endif
  typedef unsigned long        size_t;
  typedef   signed long       ssize_t;
- typedef unsigned long     uintptr_t;
- typedef   signed long      intptr_t;
+-typedef unsigned long     uintptr_t;
+-typedef   signed long      intptr_t;
++#if defined(__ILP32__)
++typedef unsigned int      uintptr_t;
++typedef   signed int       intptr_t;
++#else
++typedef unsigned long     uintptr_t;
++typedef   signed long      intptr_t;
++#endif
  typedef   signed long     ptrdiff_t;
++#elif defined(__arm__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
++typedef unsigned long long uint64_t;
++typedef   signed long long  int64_t;
++typedef unsigned int         size_t;
++typedef   signed int        ssize_t;
++typedef unsigned long     uintptr_t;
++typedef   signed int       intptr_t;
++typedef   signed int      ptrdiff_t;
 +#else
 +typedef unsigned long long uint64_t;
 +typedef   signed long long  int64_t;
@@ -303,26 +323,3 @@ index 78473d34e..f17e6f598 100644
 +		mode = va_arg(args, /* mode_t */ unsigned int);
  		va_end(args);
  	}
- 
-diff --git a/tools/include/nolibc/types.h b/tools/include/nolibc/types.h
-index fbbc0e68c..d003c368d 100644
---- a/tools/include/nolibc/types.h
-+++ b/tools/include/nolibc/types.h
-@@ -92,6 +92,8 @@
- #define FD_SETIDXMASK (8 * sizeof(unsigned long))
- #define FD_SETBITMASK (8 * sizeof(unsigned long)-1)
- 
-+#ifndef __mips__
-+
- /* for select() */
- typedef struct {
- 	unsigned long fds[(FD_SETSIZE + FD_SETBITMASK) / FD_SETIDXMASK];
-@@ -131,6 +133,8 @@ typedef struct {
- 			__set->fds[__idx] = 0;				\
- 	} while (0)
- 
-+#endif
-+
- /* for poll() */
- #define POLLIN          0x0001
- #define POLLPRI         0x0002

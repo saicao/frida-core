@@ -508,12 +508,47 @@ namespace Frida.GDB {
 			yield write_byte_array (address, new Bytes ({ val ? 1 : 0 }), cancellable);
 		}
 
+		public async void spray_pages (uint64 address, size_t size, size_t page_size, Cancellable? cancellable = null)
+				throws Error, IOError {
+			int n_pages = (int) (size / page_size);
+			if (n_pages == 0)
+				throw new Error.INVALID_ARGUMENT ("Expected one or more pages");
+
+			var builder = make_packet_builder_sized (64);
+			Future<bool>? last_write = null;
+
+			for (int i = 0; i < n_pages; i += 2) {
+				bool is_last = (i + 2 >= n_pages);
+
+				uint64 last_byte_addr = address + ((uint64) i * page_size) + page_size - 1;
+				size_t write_count = is_last ? 1 : 2;
+
+				builder
+					.append_c ('M')
+					.append_address (last_byte_addr)
+					.append_c (',')
+					.append_size (write_count)
+					.append_c (':')
+					.append_escaped ((write_count == 2) ? "0000" : "00");
+
+				var request = new Promise<bool> ();
+				perform_execute.begin (builder.build (), cancellable, request);
+
+				builder.reset ();
+
+				if (is_last)
+					last_write = request.future;
+			}
+
+			yield last_write.wait_async (cancellable);
+		}
+
 		public BufferBuilder make_buffer_builder () {
-			return new BufferBuilder (pointer_size, byte_order);
+			return new BufferBuilder (byte_order, pointer_size);
 		}
 
 		public Buffer make_buffer (Bytes bytes) {
-			return new Buffer (bytes, pointer_size, byte_order);
+			return new Buffer (bytes, byte_order, pointer_size);
 		}
 
 		public async Buffer read_buffer (uint64 address, size_t size, Cancellable? cancellable = null) throws Error, IOError {
@@ -727,6 +762,16 @@ namespace Frida.GDB {
 		public async void execute (Bytes command, Cancellable? cancellable) throws Error, IOError {
 			Packet response = yield query (command, cancellable);
 			check_execute_response (response);
+		}
+
+		private async void perform_execute (Bytes command, Cancellable? cancellable, Promise<bool> request)
+				throws Error, IOError {
+			try {
+				yield execute (command, cancellable);
+				request.resolve (true);
+			} catch (GLib.Error e) {
+				request.reject (e);
+			}
 		}
 
 		private static void check_execute_response (Packet packet) throws Error {
@@ -1087,7 +1132,7 @@ namespace Frida.GDB {
 			return sum;
 		}
 
-		public class Packet {
+		public sealed class Packet {
 			public const size_t OVERHEAD = 1 + 1 + 2;
 
 			public string payload {
@@ -1106,7 +1151,7 @@ namespace Frida.GDB {
 			}
 		}
 
-		public class PacketBuilder {
+		public sealed class PacketBuilder {
 			private StringBuilder? buffer;
 			private size_t initial_capacity;
 			private ChecksumType checksum_type;
@@ -1678,7 +1723,7 @@ namespace Frida.GDB {
 
 			var response = yield client.query (request, cancellable);
 
-			return Protocol.parse_pointer_value (response.payload, client.pointer_size, client.byte_order);
+			return Protocol.parse_integer_value (response.payload, client.byte_order);
 		}
 
 		public async void write_register (string name, uint64 val, Cancellable? cancellable = null) throws Error, IOError {
@@ -1727,7 +1772,7 @@ namespace Frida.GDB {
 		}
 	}
 
-	public class Breakpoint : Object {
+	public sealed class Breakpoint : Object {
 		public signal void removed ();
 
 		public Kind kind {
@@ -1823,9 +1868,11 @@ namespace Frida.GDB {
 	}
 
 	namespace Protocol {
+#if HAVE_FRUITY_BACKEND
 		internal uint64 parse_address (string raw_val) throws Error {
 			return parse_uint64 (raw_val, 16);
 		}
+#endif
 
 		internal uint parse_uint (string raw_val, uint radix) throws Error {
 			uint64 val;

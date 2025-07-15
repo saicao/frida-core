@@ -72,10 +72,8 @@ frida_test_process_backend_filename_of (void * handle)
   image_count = _dyld_image_count ();
   for (image_idx = 0; image_idx != image_count; image_idx++)
   {
-    const gchar * image_path = _dyld_get_image_name (image_idx);
-
-    if (g_str_has_suffix (image_path, "/frida-tests"))
-      return g_strdup (image_path);
+    if (_dyld_get_image_header (image_idx)->filetype == MH_EXECUTE)
+      return g_strdup (_dyld_get_image_name (image_idx));
   }
 
   g_assert_not_reached ();
@@ -159,16 +157,16 @@ frida_test_process_backend_create (const char * path, gchar ** argv,
 # elif defined (HAVE_ARM)
     pref = (arch == FRIDA_TEST_ARCH_CURRENT) ? CPU_TYPE_ARM : CPU_TYPE_ARM64;
 # elif defined (HAVE_ARM64)
-#  if __has_feature (ptrauth_calls)
     pref = CPU_TYPE_ARM64;
+#  if __has_feature (ptrauth_calls)
+    if (arch == FRIDA_TEST_ARCH_CURRENT)
+#  else
     if (arch == FRIDA_TEST_ARCH_OTHER)
+#  endif
     {
-      special_path = g_strconcat (path, "64", NULL);
+      special_path = g_strconcat (path, "-arm64e", NULL);
       path = special_path;
     }
-#  else
-    pref = (arch == FRIDA_TEST_ARCH_CURRENT) ? CPU_TYPE_ARM64 : CPU_TYPE_ARM;
-#  endif
 # endif
     posix_spawnattr_setbinpref_np (&attr, 1, &pref, &ocount);
 
@@ -409,6 +407,7 @@ frida_test_process_backend_kill (void * handle)
 #if defined (HAVE_DARWIN) || defined (HAVE_QNX)
   kill (GPOINTER_TO_SIZE (handle), SIGKILL);
 #else
+  g_subprocess_force_exit (handle);
   g_object_unref (handle);
 #endif
 }

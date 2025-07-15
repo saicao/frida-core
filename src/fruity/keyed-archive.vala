@@ -22,7 +22,12 @@ namespace Frida.Fruity {
 		}
 	}
 
-	public class NSNumber : NSObject {
+	public sealed class NSNumber : NSObject {
+		public Kind kind {
+			get;
+			private set;
+		}
+
 		public bool boolean {
 			get;
 			private set;
@@ -33,14 +38,44 @@ namespace Frida.Fruity {
 			private set;
 		}
 
+		public double number {
+			get;
+			private set;
+		}
+
+		public enum Kind {
+			BOOLEAN,
+			INTEGER,
+			FLOAT,
+			DOUBLE,
+		}
+
 		public NSNumber.from_boolean (bool val) {
+			kind = BOOLEAN;
 			boolean = val;
 			integer = val ? 1 : 0;
+			number = val ? 1.0 : 0.0;
 		}
 
 		public NSNumber.from_integer (int64 val) {
+			kind = INTEGER;
 			boolean = (val != 0) ? true : false;
 			integer = val;
+			number = val;
+		}
+
+		public NSNumber.from_float (float val) {
+			kind = FLOAT;
+			boolean = (val != 0.0f) ? true : false;
+			integer = (int64) val;
+			number = val;
+		}
+
+		public NSNumber.from_double (double val) {
+			kind = DOUBLE;
+			boolean = (val != 0.0) ? true : false;
+			integer = (int64) val;
+			number = val;
 		}
 
 		public override uint hash () {
@@ -51,7 +86,21 @@ namespace Frida.Fruity {
 			var other_number = other as NSNumber;
 			if (other_number == null)
 				return false;
-			return other_number.integer == integer;
+
+			if (other_number.kind != kind)
+				return false;
+
+			switch (kind) {
+				case BOOLEAN:
+					return other_number.boolean == boolean;
+				case INTEGER:
+					return other_number.integer == integer;
+				case FLOAT:
+				case DOUBLE:
+					return other_number.number == number;
+			}
+
+			return false;
 		}
 
 		public override string to_string () {
@@ -59,7 +108,7 @@ namespace Frida.Fruity {
 		}
 	}
 
-	public class NSString : NSObject {
+	public sealed class NSString : NSObject {
 		public string str {
 			get;
 			private set;
@@ -85,7 +134,33 @@ namespace Frida.Fruity {
 		}
 	}
 
-	public class NSDictionary : NSObject {
+	public sealed class NSData : NSObject {
+		public Bytes bytes {
+			get;
+			private set;
+		}
+
+		public NSData (Bytes bytes) {
+			this.bytes = bytes;
+		}
+
+		public override uint hash () {
+			return bytes.hash ();
+		}
+
+		public override bool is_equal_to (NSObject other) {
+			var other_data = other as NSData;
+			if (other_data == null)
+				return false;
+			return other_data.bytes.compare (bytes) == 0;
+		}
+
+		public override string to_string () {
+			return "NSData";
+		}
+	}
+
+	public sealed class NSDictionary : NSObject {
 		public int size {
 			get {
 				return storage.size;
@@ -146,7 +221,7 @@ namespace Frida.Fruity {
 		}
 	}
 
-	public class NSDictionaryRaw : NSObject {
+	public sealed class NSDictionaryRaw : NSObject {
 		public int size {
 			get {
 				return storage.size;
@@ -180,7 +255,7 @@ namespace Frida.Fruity {
 		}
 	}
 
-	public class NSArray : NSObject {
+	public sealed class NSArray : NSObject {
 		public int length {
 			get {
 				return storage.size;
@@ -198,9 +273,13 @@ namespace Frida.Fruity {
 		public NSArray (Gee.ArrayList<NSObject>? storage = null) {
 			this.storage = (storage != null) ? storage : new Gee.ArrayList<NSObject> (NSObject.equal_func);
 		}
+
+		public void add_object (NSObject obj) {
+			storage.add (obj);
+		}
 	}
 
-	public class NSDate : NSObject {
+	public sealed class NSDate : NSObject {
 		public double time {
 			get;
 			private set;
@@ -219,7 +298,7 @@ namespace Frida.Fruity {
 		}
 	}
 
-	public class NSError : NSObject {
+	public sealed class NSError : NSObject {
 		public NSString domain {
 			get;
 			private set;
@@ -242,11 +321,23 @@ namespace Frida.Fruity {
 		}
 	}
 
+	public sealed class DTTapMessage : NSObject {
+		public NSDictionary plist {
+			get;
+			private set;
+		}
+
+		public DTTapMessage (NSDictionary plist) {
+			this.plist = plist;
+		}
+	}
+
 	namespace NSKeyedArchive {
 		private Gee.HashMap<Type, EncodeFunc> encoders;
 		private Gee.HashMap<string, DecodeFunc> decoders;
 
 		private const string[] DICTIONARY_CLASS = { "NSDictionary", "NSObject" };
+		private const string[] ARRAY_CLASS = { "NSArray", "NSObject" };
 
 		[CCode (has_target = false)]
 		private delegate PlistUid EncodeFunc (NSObject instance, EncodingContext ctx);
@@ -319,8 +410,17 @@ namespace Frida.Fruity {
 			if (t == typeof (int64))
 				return new NSNumber.from_integer (val.get_int64 ());
 
+			if (t == typeof (float))
+				return new NSNumber.from_float (val.get_float ());
+
+			if (t == typeof (double))
+				return new NSNumber.from_double (val.get_double ());
+
 			if (t == typeof (string))
 				return new NSString (val.get_string ());
+
+			if (t == typeof (Bytes))
+				return new NSData ((Bytes) val.get_boxed ());
 
 			if (t == typeof (PlistDict)) {
 				var instance = (PlistDict) val.get_object ();
@@ -354,6 +454,7 @@ namespace Frida.Fruity {
 			encoders[typeof (NSNumber)] = encode_number;
 			encoders[typeof (NSString)] = encode_string;
 			encoders[typeof (NSDictionary)] = encode_dictionary;
+			encoders[typeof (NSArray)] = encode_array;
 		}
 
 		private static void ensure_decoders_registered () {
@@ -365,11 +466,41 @@ namespace Frida.Fruity {
 			decoders["NSArray"] = decode_array;
 			decoders["NSDate"] = decode_date;
 			decoders["NSError"] = decode_error;
+			decoders["DTTapMessage"] = decode_tap_message;
+			decoders["DTSysmonTapMessage"] = decode_tap_message;
+			decoders["DTActivityTraceTapMessage"] = decode_tap_message;
+			decoders["DTTapStatusMessage"] = decode_tap_message;
+			decoders["DTTapHeartbeatMessage"] = decode_tap_message;
+			decoders["DTKTraceTapMessage"] = decode_tap_message;
 		}
 
 		private static PlistUid encode_number (NSObject instance, EncodingContext ctx) {
-			int64 val = ((NSNumber) instance).integer;
+			var n = (NSNumber) instance;
+			switch (n.kind) {
+				case BOOLEAN:
+					return encode_boolean (n.boolean, ctx);
+				case INTEGER:
+					return encode_integer (n.integer, ctx);
+				case FLOAT:
+					return encode_float (n.integer, ctx);
+				case DOUBLE:
+					return encode_double (n.integer, ctx);
+			}
+			assert_not_reached ();
+		}
 
+		private static PlistUid encode_boolean (bool val, EncodingContext ctx) {
+			var uid = ctx.find_existing_object (e => e.holds (typeof (bool)) && e.get_boolean () == val);
+			if (uid != null)
+				return uid;
+
+			var objects = ctx.objects;
+			uid = new PlistUid (objects.length);
+			objects.add_boolean (val);
+			return uid;
+		}
+
+		private static PlistUid encode_integer (int64 val, EncodingContext ctx) {
 			var uid = ctx.find_existing_object (e => e.holds (typeof (int64)) && e.get_int64 () == val);
 			if (uid != null)
 				return uid;
@@ -377,6 +508,28 @@ namespace Frida.Fruity {
 			var objects = ctx.objects;
 			uid = new PlistUid (objects.length);
 			objects.add_integer (val);
+			return uid;
+		}
+
+		private static PlistUid encode_float (float val, EncodingContext ctx) {
+			var uid = ctx.find_existing_object (e => e.holds (typeof (float)) && e.get_float () == val);
+			if (uid != null)
+				return uid;
+
+			var objects = ctx.objects;
+			uid = new PlistUid (objects.length);
+			objects.add_float (val);
+			return uid;
+		}
+
+		private static PlistUid encode_double (double val, EncodingContext ctx) {
+			var uid = ctx.find_existing_object (e => e.holds (typeof (double)) && e.get_double () == val);
+			if (uid != null)
+				return uid;
+
+			var objects = ctx.objects;
+			uid = new PlistUid (objects.length);
+			objects.add_double (val);
 			return uid;
 		}
 
@@ -451,6 +604,21 @@ namespace Frida.Fruity {
 			}
 		}
 
+		private static PlistUid encode_array (NSObject instance, EncodingContext ctx) {
+			NSArray array = (NSArray) instance;
+
+			var object = new PlistDict ();
+			var uid = ctx.add_object (object);
+
+			var objs = new PlistArray ();
+			foreach (var element in array.elements)
+				objs.add_uid (encode_value (element, ctx));
+			object.set_array ("NS.objects", objs);
+			object.set_uid ("$class", ctx.get_class (ARRAY_CLASS));
+
+			return uid;
+		}
+
 		private static NSObject decode_array (PlistDict instance, DecodingContext ctx) throws Error, PlistError {
 			var objs = instance.get_array ("NS.objects");
 
@@ -486,7 +654,11 @@ namespace Frida.Fruity {
 			return new NSError (domain, code, (NSDictionary) user_info);
 		}
 
-		private class EncodingContext {
+		private static NSObject decode_tap_message (PlistDict instance, DecodingContext ctx) throws Error, PlistError {
+			return new DTTapMessage ((NSDictionary) decode_value (instance.get_uid ("DTTapMessagePlist"), ctx));
+		}
+
+		private sealed class EncodingContext {
 			public PlistArray objects;
 
 			private Gee.HashMap<string, PlistUid> classes = new Gee.HashMap<string, PlistUid> ();
@@ -537,7 +709,7 @@ namespace Frida.Fruity {
 			}
 		}
 
-		private class DecodingContext {
+		private sealed class DecodingContext {
 			public PlistArray objects;
 
 			public DecodingContext (PlistArray objects) {

@@ -11,7 +11,7 @@ namespace Frida.Agent {
 		PROCESS_TRANSITION
 	}
 
-	private class Runner : Object, ProcessInvader, AgentSessionProvider, ExitHandler, ForkHandler, SpawnHandler {
+	private sealed class Runner : Object, ProcessInvader, AgentSessionProvider, ExitHandler, ForkHandler, SpawnHandler {
 		public static Runner shared_instance = null;
 		public static Mutex shared_mutex;
 		private static string? cached_agent_path = null;
@@ -81,7 +81,7 @@ namespace Frida.Agent {
 
 		private uint child_gating_subscriber_count = 0;
 		private ForkMonitor? fork_monitor;
-		private FileDescriptorGuard fd_guard;
+		private FileDescriptorGuard? fd_guard;
 		private ThreadCountCloaker? thread_count_cloaker;
 		private ThreadListCloaker? thread_list_cloaker;
 		private FDListCloaker? fd_list_cloaker;
@@ -99,6 +99,7 @@ namespace Frida.Agent {
 		private Cond transition_cond;
 		private SpawnMonitor? spawn_monitor;
 		private ThreadSuspendMonitor? thread_suspend_monitor;
+		private UnwindSitter? unwind_sitter;
 
 		private delegate void CompletionNotify ();
 
@@ -148,7 +149,6 @@ namespace Frida.Agent {
 					linjector_state->agent_ctrlfd = -1;
 
 					fdt_padder.move_descriptor_if_needed (ref agent_ctrlfd);
-					Gum.Cloak.add_file_descriptor (agent_ctrlfd);
 
 					agent_parameters_with_transport_uri = "socket:%d%s".printf (agent_ctrlfd, agent_parameters);
 					agent_parameters = agent_parameters_with_transport_uri;
@@ -259,6 +259,7 @@ namespace Frida.Agent {
 			interceptor.begin_transaction ();
 
 			thread_suspend_monitor = null;
+			unwind_sitter = null;
 
 			invalidate_dbus_context ();
 
@@ -287,6 +288,7 @@ namespace Frida.Agent {
 #endif
 			bool enable_exit_monitor = true;
 			bool enable_thread_suspend_monitor = true;
+			bool enable_unwind_sitter = true;
 			foreach (unowned string option in tokens[1:]) {
 				if (option == "eternal")
 					ensure_eternalized ();
@@ -298,6 +300,8 @@ namespace Frida.Agent {
 					enable_exit_monitor = false;
 				else if (option == "thread-suspend-monitor:off")
 					enable_thread_suspend_monitor = false;
+				else if (option == "unwind-sitter:off")
+					enable_unwind_sitter = false;
 			}
 
 			if (!enable_exceptor)
@@ -312,6 +316,9 @@ namespace Frida.Agent {
 
 				if (enable_thread_suspend_monitor)
 					thread_suspend_monitor = new ThreadSuspendMonitor (this);
+
+				if (enable_unwind_sitter)
+					unwind_sitter = new UnwindSitter (this);
 
 				this.interceptor = interceptor;
 				this.exceptor = Gum.Exceptor.obtain ();
@@ -1393,12 +1400,12 @@ namespace Frida.Agent {
 				if (nb_api.unload_library == null)
 					parameters.append ("|eternal|sticky");
 				/*
-				 * Disable ExitMonitor to work around a bug in Android's libndk_translation.so on Android 11.
-				 * We need to avoid modifying libc.so ranges that the translator potentially depends on, to
-				 * avoid blowing up when Interceptor's CPU cache flush results in the translated code being
-				 * discarded, which seems like an edge-case the translator doesn't handle.
+				 * Disable Exceptor and ExitMonitor to work around a bug in Android's libndk_translation.so
+				 * on Android 11. We need to avoid modifying libc.so ranges that the translator potentially
+				 * depends on, to avoid blowing up when Interceptor's CPU cache flush results in the translated
+				 * code being discarded, which seems like an edge-case the translator doesn't handle.
 				 */
-				parameters.append ("|exit-monitor:off");
+				parameters.append ("|exceptor:off|exit-monitor:off");
 
 				emulated_bridge_state = new BridgeState (parameters.str);
 
@@ -1502,13 +1509,14 @@ namespace Frida.Agent {
 			}
 
 			public static NativeBridgeApi open () throws Error {
-				string? nb_mod = null;
-				string? vm_mod = null;
-				Gum.Process.enumerate_modules ((details) => {
-					if (/\/lib(64)?\/libnativebridge.so$/.match (details.path))
-						nb_mod = details.path;
-					else if (/^lib(art|dvm).so$/.match (details.name) && !/\/system\/fake-libs/.match (details.path))
-						vm_mod = details.path;
+				Gum.Module? nb_mod = null;
+				Gum.Module? vm_mod = null;
+				Gum.Process.enumerate_modules (module => {
+					unowned string path = module.path;
+					if (/\/lib(64)?\/libnativebridge.so$/.match (path))
+						nb_mod = module;
+					else if (/^lib(art|dvm).so$/.match (module.name) && !/\/system\/fake-libs/.match (path))
+						vm_mod = module;
 					bool carry_on = nb_mod == null || vm_mod == null;
 					return carry_on;
 				});
@@ -1523,29 +1531,27 @@ namespace Frida.Agent {
 				NBUnloadLibraryFunc? unload;
 				NBGetTrampolineFunc get_trampoline;
 
-				load = (NBLoadLibraryFunc) Gum.Module.find_export_by_name (nb_mod, "NativeBridgeLoadLibrary");;
+				load = (NBLoadLibraryFunc) nb_mod.find_export_by_name ("NativeBridgeLoadLibrary");;
 				if (load != null) {
 					flavor = MODERN;
-					load_ext = (NBLoadLibraryExtFunc) Gum.Module.find_export_by_name (nb_mod, "NativeBridgeLoadLibraryExt");
+					load_ext = (NBLoadLibraryExtFunc) nb_mod.find_export_by_name ("NativeBridgeLoadLibraryExt");
 					// XXX: NativeBridgeUnloadLibrary() is only a stub as of Android 11 w/ libndk_translation.so
 					unload = null;
-					get_trampoline = (NBGetTrampolineFunc) Gum.Module.find_export_by_name (nb_mod,
-						"NativeBridgeGetTrampoline");
+					get_trampoline = (NBGetTrampolineFunc) nb_mod.find_export_by_name ("NativeBridgeGetTrampoline");
 				} else {
 					flavor = LEGACY;
-					load = (NBLoadLibraryFunc) Gum.Module.find_export_by_name (nb_mod,
-						"_ZN7android23NativeBridgeLoadLibraryEPKci");
-					load_ext = (NBLoadLibraryExtFunc) Gum.Module.find_export_by_name (nb_mod,
+					load = (NBLoadLibraryFunc) nb_mod.find_export_by_name ("_ZN7android23NativeBridgeLoadLibraryEPKci");
+					load_ext = (NBLoadLibraryExtFunc) nb_mod.find_export_by_name (
 						"_ZN7android26NativeBridgeLoadLibraryExtEPKciPNS_25native_bridge_namespace_tE");
 					// XXX: Unload implementation seems to be unreliable.
 					unload = null;
-					get_trampoline = (NBGetTrampolineFunc) Gum.Module.find_export_by_name (nb_mod,
+					get_trampoline = (NBGetTrampolineFunc) nb_mod.find_export_by_name (
 						"_ZN7android25NativeBridgeGetTrampolineEPvPKcS2_j");
 				}
 				if (load == null || get_trampoline == null)
 					throw new Error.NOT_SUPPORTED ("NativeBridge API is not available on this system");
 
-				var get_vms = (JNIGetCreatedJavaVMsFunc) Gum.Module.find_export_by_name (vm_mod, "JNI_GetCreatedJavaVMs");
+				var get_vms = (JNIGetCreatedJavaVMsFunc) vm_mod.find_export_by_name ("JNI_GetCreatedJavaVMs");
 				if (get_vms == null)
 					throw new Error.NOT_SUPPORTED ("Unable to locate Java VM");
 
@@ -1615,7 +1621,7 @@ namespace Frida.Agent {
 	}
 #endif
 
-	private class LiveAgentSession : BaseAgentSession {
+	private sealed class LiveAgentSession : BaseAgentSession {
 		public uint registration_id {
 			get;
 			set;

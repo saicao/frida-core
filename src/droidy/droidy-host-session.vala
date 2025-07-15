@@ -1,5 +1,5 @@
 namespace Frida {
-	public class DroidyHostSessionBackend : Object, HostSessionBackend {
+	public sealed class DroidyHostSessionBackend : Object, HostSessionBackend {
 		private Droidy.DeviceTracker tracker;
 
 		private Gee.HashMap<string, DroidyHostSessionProvider> providers = new Gee.HashMap<string, DroidyHostSessionProvider> ();
@@ -86,7 +86,7 @@ namespace Frida {
 		}
 	}
 
-	public class DroidyHostSessionProvider : Object, HostSessionProvider, ChannelProvider {
+	public sealed class DroidyHostSessionProvider : Object, HostSessionProvider, HostChannelProvider {
 		public string id {
 			get { return device_details.serial; }
 		}
@@ -158,11 +158,41 @@ namespace Frida {
 			return yield this.host_session.link_agent_session (id, sink, cancellable);
 		}
 
+		public void unlink_agent_session (HostSession host_session, AgentSessionId id) {
+			if (host_session != this.host_session)
+				return;
+
+			this.host_session.unlink_agent_session (id);
+		}
+
+		public async IOStream link_channel (HostSession host_session, ChannelId id, Cancellable? cancellable)
+				throws Error, IOError {
+			if (host_session != this.host_session)
+				throw new Error.INVALID_ARGUMENT ("Invalid host session");
+
+			return this.host_session.link_channel (id);
+		}
+
+		public void unlink_channel (HostSession host_session, ChannelId id) {
+			if (host_session != this.host_session)
+				return;
+
+			this.host_session.unlink_channel (id);
+		}
+
+		public async ServiceSession link_service_session (HostSession host_session, ServiceSessionId id, Cancellable? cancellable)
+				throws Error, IOError {
+			throw new Error.NOT_SUPPORTED ("Services are not supported by this backend");
+		}
+
+		public void unlink_service_session (HostSession host_session, ServiceSessionId id) {
+		}
+
 		private void on_agent_session_detached (AgentSessionId id, SessionDetachReason reason, CrashInfo crash) {
 			agent_session_detached (id, reason, crash);
 		}
 
-		public async IOStream open_channel (string address, Cancellable? cancellable = null) throws Error, IOError {
+		public async IOStream open_channel (string address, Cancellable? cancellable) throws Error, IOError {
 			if (address.contains (":")) {
 				Droidy.Client client = null;
 				try {
@@ -182,13 +212,13 @@ namespace Frida {
 		}
 	}
 
-	public class DroidyHostSession : Object, HostSession {
+	public sealed class DroidyHostSession : Object, HostSession {
 		public Droidy.DeviceDetails device_details {
 			get;
 			construct;
 		}
 
-		public weak ChannelProvider channel_provider {
+		public weak HostChannelProvider channel_provider {
 			get;
 			construct;
 		}
@@ -211,16 +241,22 @@ namespace Frida {
 		private Gee.HashMap<AgentSessionId?, AgentSessionEntry> agent_sessions =
 			new Gee.HashMap<AgentSessionId?, AgentSessionEntry> (AgentSessionId.hash, AgentSessionId.equal);
 
+		private ChannelRegistry channel_registry = new ChannelRegistry ();
+
 		private Cancellable io_cancellable = new Cancellable ();
 
 		private const double MIN_SERVER_CHECK_INTERVAL = 5.0;
 		private const string GADGET_APP_ID = "re.frida.Gadget";
 
-		public DroidyHostSession (Droidy.DeviceDetails device_details, ChannelProvider channel_provider) {
+		public DroidyHostSession (Droidy.DeviceDetails device_details, HostChannelProvider channel_provider) {
 			Object (
 				device_details: device_details,
 				channel_provider: channel_provider
 			);
+		}
+
+		construct {
+			channel_registry.channel_closed.connect (on_channel_closed);
 		}
 
 		public async void close (Cancellable? cancellable) throws IOError {
@@ -832,6 +868,15 @@ namespace Frida {
 			return session;
 		}
 
+		public void unlink_agent_session (AgentSessionId id) {
+			AgentSessionEntry? entry = agent_sessions[id];
+			if (entry == null || entry.sink_registration_id == 0)
+				return;
+
+			entry.connection.unregister_object (entry.sink_registration_id);
+			entry.sink_registration_id = 0;
+		}
+
 		public async InjectorPayloadId inject_library_file (uint pid, string path, string entrypoint, string data,
 				Cancellable? cancellable) throws Error, IOError {
 			var server = yield get_remote_server (cancellable);
@@ -850,6 +895,31 @@ namespace Frida {
 			} catch (GLib.Error e) {
 				throw_dbus_error (e);
 			}
+		}
+
+		public async ChannelId open_channel (string address, Cancellable? cancellable) throws Error, IOError {
+			var stream = yield channel_provider.open_channel (address, cancellable);
+
+			var id = ChannelId.generate ();
+			channel_registry.register (id, stream);
+
+			return id;
+		}
+
+		public IOStream link_channel (ChannelId id) throws Error {
+			return channel_registry.link (id);
+		}
+
+		public void unlink_channel (ChannelId id) {
+			channel_registry.unlink (id);
+		}
+
+		private void on_channel_closed (ChannelId id) {
+			channel_closed (id);
+		}
+
+		public async ServiceSessionId open_service (string address, Cancellable? cancellable) throws Error, IOError {
+			throw new Error.NOT_SUPPORTED ("Services are not supported by this backend");
 		}
 
 		private void on_gadget_entry_detached (GadgetEntry entry, SessionDetachReason reason) {
@@ -1217,7 +1287,7 @@ namespace Frida {
 			}
 		}
 
-		public class HelperClient : Object, AsyncInitable {
+		public sealed class HelperClient : Object, AsyncInitable {
 			public signal void closed ();
 
 			public string device_serial {

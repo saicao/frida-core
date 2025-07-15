@@ -22,6 +22,9 @@ namespace Frida.Barebone {
 		public abstract async Allocation allocate_pages (uint64 physical_address, uint num_pages, Cancellable? cancellable)
 			throws Error, IOError;
 
+		public abstract async void protect_pages (uint64 virtual_address, size_t size, Gum.PageProtection prot,
+			Cancellable? cancellable) throws Error, IOError;
+
 		public abstract async Gee.List<uint64?> scan_ranges (Gee.List<Gum.MemoryRange?> ranges, MatchPattern pattern,
 			uint max_matches, Cancellable? cancellable) throws Error, IOError;
 
@@ -36,8 +39,7 @@ namespace Frida.Barebone {
 				return true;
 			});
 
-			var relocated_buf = new Buffer (
-				new Bytes (module.get_file_data ()[file_start:file_end]), gdb.pointer_size, gdb.byte_order);
+			var relocated_buf = gdb.make_buffer (new Bytes (module.get_file_data ()[file_start:file_end]));
 			Error? pending_error = null;
 			module.enumerate_relocations (r => {
 				unowned string parent_section = (r.parent != null) ? r.parent.name : "";
@@ -66,8 +68,7 @@ namespace Frida.Barebone {
 
 		public abstract void apply_relocation (Gum.ElfRelocationDetails r, uint64 base_va, Buffer relocated) throws Error;
 
-		public abstract async uint64 invoke (uint64 impl, uint64[] args, uint64 landing_zone, Cancellable? cancellable)
-			throws Error, IOError;
+		public abstract async uint64 invoke (uint64 impl, uint64[] args, Cancellable? cancellable) throws Error, IOError;
 
 		public abstract async CallFrame load_call_frame (GDB.Thread thread, uint arity, Cancellable? cancellable)
 			throws Error, IOError;

@@ -1,5 +1,5 @@
 namespace Frida {
-	public class Winjector : Object, Injector {
+	public sealed class Winjector : Object, Injector {
 		public WindowsHelper helper {
 			get;
 			construct;
@@ -119,7 +119,7 @@ namespace Frida {
 		protected extern static void set_acls_as_needed (string path) throws Error;
 	}
 
-	public class AgentDescriptor : Object {
+	public sealed class AgentDescriptor : Object {
 		public PathTemplate name_template {
 			get;
 			construct;
@@ -142,11 +142,12 @@ namespace Frida {
 
 		private PathTemplate? cached_path_template;
 
-		public AgentDescriptor (PathTemplate name_template, Bytes dll32, Bytes dll64, AgentResource[] dependencies,
-				TemporaryDirectory? tempdir = null) {
+		public AgentDescriptor (PathTemplate name_template, Bytes dll_arm64, Bytes dll_x86_64, Bytes dll_x86,
+				AgentResource[] dependencies, TemporaryDirectory? tempdir = null) {
 			var agents = new Gee.ArrayList<AgentResource> ();
-			agents.add (new AgentResource (name_template.expand ("32"), dll32, tempdir));
-			agents.add (new AgentResource (name_template.expand ("64"), dll64, tempdir));
+			agents.add (new AgentResource (name_template.expand ("arm64"), dll_arm64, tempdir));
+			agents.add (new AgentResource (name_template.expand ("x86_64"), dll_x86_64, tempdir));
+			agents.add (new AgentResource (name_template.expand ("x86"), dll_x86, tempdir));
 
 			Object (
 				name_template: name_template,
@@ -176,7 +177,7 @@ namespace Frida {
 		}
 	}
 
-	public class AgentResource : Object {
+	public sealed class AgentResource : Object {
 		public string name {
 			get;
 			construct;

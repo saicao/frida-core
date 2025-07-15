@@ -1,6 +1,6 @@
 [CCode (gir_namespace = "FridaFruity", gir_version = "1.0")]
 namespace Frida.Fruity {
-	public class Plist : PlistDict {
+	public sealed class Plist : PlistDict {
 		public enum Format {
 			AUTO,
 			BINARY,
@@ -454,7 +454,7 @@ namespace Frida.Fruity {
 						write_entry (entry);
 
 					size_t offset_table_offset = (size_t) seekable.tell ();
-					offset_size = compute_offset_size (sorted_entries.last ().offset);
+					offset_size = compute_offset_size (offset_table_offset);
 					foreach (var entry in sorted_entries)
 						write_offset (entry.offset);
 
@@ -1088,6 +1088,11 @@ namespace Frida.Fruity {
 			}
 
 			public void write_dict (PlistDict dict) {
+				if (dict.is_empty) {
+					write_line ("<dict/>");
+					return;
+				}
+
 				write_line ("<dict>");
 				level++;
 
@@ -1114,6 +1119,11 @@ namespace Frida.Fruity {
 			}
 
 			public void write_array (PlistArray array) {
+				if (array.is_empty) {
+					write_line ("<array/>");
+					return;
+				}
+
 				write_line ("<array>");
 				level++;
 
@@ -1355,7 +1365,7 @@ namespace Frida.Fruity {
 		}
 	}
 
-	public class PlistArray : Object {
+	public sealed class PlistArray : Object {
 		public bool is_empty {
 			get {
 				return storage.is_empty;
@@ -1511,10 +1521,10 @@ namespace Frida.Fruity {
 		}
 	}
 
-	public class PlistNull : Object {
+	public sealed class PlistNull : Object {
 	}
 
-	public class PlistDate : Object {
+	public sealed class PlistDate : Object {
 		private DateTime time;
 
 		public PlistDate (DateTime time) {
@@ -1526,7 +1536,7 @@ namespace Frida.Fruity {
 		}
 	}
 
-	public class PlistUid : Object {
+	public sealed class PlistUid : Object {
 		public uint64 uid {
 			get;
 			construct;
@@ -1573,6 +1583,12 @@ namespace Frida.Fruity {
 		if (t == typeof (int64))
 			return (uint) v.get_int64 ();
 
+		if (t == typeof (float))
+			return (uint) v.get_float ();
+
+		if (t == typeof (double))
+			return (uint) v.get_double ();
+
 		if (t == typeof (string))
 			return str_hash (v.get_string ());
 
@@ -1597,6 +1613,12 @@ namespace Frida.Fruity {
 
 		if (t == typeof (int64))
 			return a.get_int64 () == b.get_int64 ();
+
+		if (t == typeof (float))
+			return a.get_float () == b.get_float ();
+
+		if (t == typeof (double))
+			return a.get_double () == b.get_double ();
 
 		if (t == typeof (string))
 			return a.get_string () == b.get_string ();

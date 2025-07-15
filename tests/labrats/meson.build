@@ -1,3 +1,5 @@
+fs = import('fs')
+
 labrat_files = []
 
 if host_os == 'windows'
@@ -18,12 +20,17 @@ endif
 if host_os == 'macos'
   labrat_files += [
     'sleeper-macos',
+    'sleeper-macos-arm64e',
     'sleeper-macos32',
     'stdio-writer-macos',
+    'stdio-writer-macos-arm64e',
     'stdio-writer-macos32',
     'forker-macos',
+    'forker-macos-arm64e',
     'forker-macos32',
     'spawner-macos',
+    'spawner-macos-arm64e',
+    'exception-catcher-macos',
     'simple-agent-macos.dylib',
     'resident-agent-macos.dylib',
   ]
@@ -51,6 +58,7 @@ if host_os == 'ios'
     'forker-ios32',
     'forker-ios64',
     'spawner-ios',
+    'exception-catcher-ios',
     'simple-agent-ios.dylib',
     'resident-agent-ios.dylib',
   ]
@@ -106,13 +114,7 @@ if host_os == 'qnx'
   ]
 endif
 
-labrats = custom_target('labrats',
-  input: labrat_files,
-  output: labrat_files,
-  command: ['cp', '@INPUT@', '@OUTDIR@'],
-)
-labrats_stamp = custom_target('labrats-stamp',
-  input: [labrats],
-  output: '.stamp',
-  command: ['touch', '@OUTPUT@'],
-)
+labrats = []
+foreach f : labrat_files
+  labrats += fs.copyfile(f)
+endforeach

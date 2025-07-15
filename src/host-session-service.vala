@@ -1,5 +1,5 @@
 namespace Frida {
-	public class HostSessionService : Object {
+	public sealed class HostSessionService : Object {
 		private Gee.ArrayList<HostSessionBackend> backends = new Gee.ArrayList<HostSessionBackend> ();
 
 		public signal void provider_available (HostSessionProvider provider);
@@ -9,23 +9,25 @@ namespace Frida {
 
 		public HostSessionService.with_default_backends () {
 			add_local_backends ();
-#if !IOS && !ANDROID && !TVOS
-			add_backend (new FruityHostSessionBackend ());
-			add_backend (new DroidyHostSessionBackend ());
-#endif
-			add_backend (new SocketHostSessionBackend ());
-			add_backend (new BareboneHostSessionBackend ());
+			add_nonlocal_backends ();
 		}
 
 		public HostSessionService.with_local_backend_only () {
 			add_local_backends ();
 		}
 
+		public HostSessionService.with_nonlocal_backends_only () {
+			add_nonlocal_backends ();
+		}
+
 		public HostSessionService.with_socket_backend_only () {
+#if HAVE_SOCKET_BACKEND
 			add_backend (new SocketHostSessionBackend ());
+#endif
 		}
 
 		private void add_local_backends () {
+#if HAVE_LOCAL_BACKEND
 #if WINDOWS
 			add_backend (new WindowsHostSessionBackend ());
 #endif
@@ -41,10 +43,28 @@ namespace Frida {
 #if QNX
 			add_backend (new QnxHostSessionBackend ());
 #endif
+#endif
+		}
+
+		private void add_nonlocal_backends () {
+#if !IOS && !ANDROID && !TVOS
+#if HAVE_FRUITY_BACKEND
+			add_backend (new FruityHostSessionBackend ());
+#endif
+#if HAVE_DROIDY_BACKEND
+			add_backend (new DroidyHostSessionBackend ());
+#endif
+#endif
+#if HAVE_SOCKET_BACKEND
+			add_backend (new SocketHostSessionBackend ());
+#endif
+#if HAVE_BAREBONE_BACKEND
+			add_backend (new BareboneHostSessionBackend ());
+#endif
 		}
 
 		public async void start (Cancellable? cancellable = null) throws IOError {
-			var remaining = backends.size;
+			var remaining = backends.size + 1;
 
 			NotifyCompleteFunc on_complete = () => {
 				remaining--;
@@ -55,13 +75,20 @@ namespace Frida {
 			foreach (var backend in backends)
 				perform_start.begin (backend, cancellable, on_complete);
 
+			var source = new IdleSource ();
+			source.set_callback (() => {
+				on_complete ();
+				return Source.REMOVE;
+			});
+			source.attach (MainContext.get_thread_default ());
+
 			yield;
 
 			on_complete = null;
 		}
 
 		public async void stop (Cancellable? cancellable = null) throws IOError {
-			var remaining = backends.size;
+			var remaining = backends.size + 1;
 
 			NotifyCompleteFunc on_complete = () => {
 				remaining--;
@@ -71,6 +98,13 @@ namespace Frida {
 
 			foreach (var backend in backends)
 				perform_stop.begin (backend, cancellable, on_complete);
+
+			var source = new IdleSource ();
+			source.set_callback (() => {
+				on_complete ();
+				return Source.REMOVE;
+			});
+			source.attach (MainContext.get_thread_default ());
 
 			yield;
 
@@ -134,7 +168,16 @@ namespace Frida {
 
 		public abstract async AgentSession link_agent_session (HostSession host_session, AgentSessionId id, AgentMessageSink sink,
 			Cancellable? cancellable = null) throws Error, IOError;
+		public abstract void unlink_agent_session (HostSession host_session, AgentSessionId id);
 		public signal void agent_session_detached (AgentSessionId id, SessionDetachReason reason, CrashInfo crash);
+
+		public abstract async IOStream link_channel (HostSession host_session, ChannelId id, Cancellable? cancellable = null)
+			throws Error, IOError;
+		public abstract void unlink_channel (HostSession host_session, ChannelId id);
+
+		public abstract async ServiceSession link_service_session (HostSession host_session, ServiceSessionId id,
+			Cancellable? cancellable = null) throws Error, IOError;
+		public abstract void unlink_service_session (HostSession host_session, ServiceSessionId id);
 	}
 
 	public enum HostSessionProviderKind {
@@ -143,7 +186,7 @@ namespace Frida {
 		USB
 	}
 
-	public class HostSessionOptions : Object {
+	public sealed class HostSessionOptions : Object {
 		public Gee.Map<string, Value?> map {
 			get;
 			set;
@@ -151,12 +194,12 @@ namespace Frida {
 		}
 	}
 
-	public interface ChannelProvider : Object {
+	public interface HostChannelProvider : Object {
 		public abstract async IOStream open_channel (string address, Cancellable? cancellable = null) throws Error, IOError;
 	}
 
 	public interface Pairable : Object {
-		public abstract async void unpair (Cancellable? cancellable) throws Error, IOError;
+		public abstract async void unpair (Cancellable? cancellable = null) throws Error, IOError;
 	}
 
 	public interface HostSessionBackend : Object {
@@ -167,7 +210,129 @@ namespace Frida {
 		public abstract async void stop (Cancellable? cancellable = null) throws IOError;
 	}
 
-	public abstract class BaseDBusHostSession : Object, HostSession, AgentController {
+	public abstract class LocalHostSessionBackend : Object, HostSessionBackend {
+		private LocalHostSessionProvider local_provider;
+
+		public async void start (Cancellable? cancellable) throws IOError {
+			assert (local_provider == null);
+			local_provider = make_provider ();
+
+			provider_available (local_provider);
+		}
+
+		public async void stop (Cancellable? cancellable) throws IOError {
+			assert (local_provider != null);
+
+			provider_unavailable (local_provider);
+
+			yield local_provider.close (cancellable);
+			local_provider = null;
+		}
+
+		protected abstract LocalHostSessionProvider make_provider ();
+	}
+
+	public abstract class LocalHostSessionProvider : Object, HostSessionProvider {
+		public string id {
+			get { return "local"; }
+		}
+
+		public string name {
+			get { return "Local System"; }
+		}
+
+		public Variant? icon {
+			get { return _icon; }
+		}
+		private Variant? _icon;
+
+		public HostSessionProviderKind kind {
+			get { return HostSessionProviderKind.LOCAL; }
+		}
+
+		private LocalHostSession host_session;
+
+		construct {
+			_icon = load_icon ();
+		}
+
+		protected abstract LocalHostSession make_host_session (HostSessionOptions? options) throws Error;
+
+		protected void take_host_session (LocalHostSession session) {
+			host_session = session;
+			host_session.agent_session_detached.connect (on_agent_session_detached);
+		}
+
+		protected virtual Variant? load_icon () {
+			return null;
+		}
+
+		public async void close (Cancellable? cancellable) throws IOError {
+			if (host_session == null)
+				return;
+
+			host_session.agent_session_detached.disconnect (on_agent_session_detached);
+
+			yield host_session.close (cancellable);
+			host_session = null;
+		}
+
+		public async HostSession create (HostSessionOptions? options, Cancellable? cancellable) throws Error, IOError {
+			if (host_session != null)
+				throw new Error.INVALID_OPERATION ("Already created");
+
+			take_host_session (make_host_session (options));
+
+			return host_session;
+		}
+
+		public async void destroy (HostSession session, Cancellable? cancellable) throws Error, IOError {
+			if (session != host_session)
+				throw new Error.INVALID_ARGUMENT ("Invalid host session");
+
+			host_session.agent_session_detached.disconnect (on_agent_session_detached);
+
+			yield host_session.close (cancellable);
+			host_session = null;
+		}
+
+		public async AgentSession link_agent_session (HostSession host_session, AgentSessionId id, AgentMessageSink sink,
+				Cancellable? cancellable) throws Error, IOError {
+			if (host_session != this.host_session)
+				throw new Error.INVALID_ARGUMENT ("Invalid host session");
+
+			return yield this.host_session.link_agent_session (id, sink, cancellable);
+		}
+
+		public void unlink_agent_session (HostSession host_session, AgentSessionId id) {
+			if (host_session != this.host_session)
+				return;
+
+			this.host_session.unlink_agent_session (id);
+		}
+
+		public async IOStream link_channel (HostSession host_session, ChannelId id, Cancellable? cancellable)
+				throws Error, IOError {
+			throw new Error.NOT_SUPPORTED ("Channels are not supported by this backend");
+		}
+
+		public void unlink_channel (HostSession host_session, ChannelId id) {
+		}
+
+		public async ServiceSession link_service_session (HostSession host_session, ServiceSessionId id, Cancellable? cancellable)
+				throws Error, IOError {
+			throw new Error.NOT_SUPPORTED ("Services are not supported by this backend");
+		}
+
+		public void unlink_service_session (HostSession host_session, ServiceSessionId id) {
+		}
+
+		private void on_agent_session_detached (AgentSessionId id, SessionDetachReason reason, CrashInfo crash) {
+			agent_session_detached (id, reason, crash);
+		}
+	}
+
+	public abstract class LocalHostSession : Object, HostSession, AgentController {
 		private Gee.HashMap<uint, Cancellable> pending_establish_ops = new Gee.HashMap<uint, Cancellable> ();
 
 		private Gee.HashMap<uint, Future<AgentEntry>> agent_entries = new Gee.HashMap<uint, Future<AgentEntry>> ();
@@ -732,6 +897,14 @@ namespace Frida {
 			return InjectorPayloadId (raw_id);
 		}
 
+		public async ChannelId open_channel (string address, Cancellable? cancellable) throws Error, IOError {
+			throw new Error.NOT_SUPPORTED ("Channels are not supported by this backend");
+		}
+
+		public async ServiceSessionId open_service (string address, Cancellable? cancellable) throws Error, IOError {
+			throw new Error.NOT_SUPPORTED ("Services are not supported by this backend");
+		}
+
 #if !WINDOWS
 		public async HostChildId prepare_to_fork (uint parent_pid, Cancellable? cancellable, out uint parent_injectee_id,
 				out uint child_injectee_id, out GLib.Socket child_socket) throws Error, IOError {
@@ -1213,7 +1386,7 @@ namespace Frida {
 		}
 	}
 
-	internal class InstalledHelperFile : Object, HelperFile {
+	internal sealed class InstalledHelperFile : Object, HelperFile {
 		public string path {
 			owned get {
 				return installed_path;
@@ -1230,7 +1403,7 @@ namespace Frida {
 		}
 	}
 
-	internal class TemporaryHelperFile : Object, HelperFile {
+	internal sealed class TemporaryHelperFile : Object, HelperFile {
 		public string path {
 			owned get {
 				return file.path;
@@ -1250,7 +1423,7 @@ namespace Frida {
 	public abstract class InternalAgent : Object, AgentMessageSink, RpcPeer {
 		public signal void unloaded ();
 
-		public weak BaseDBusHostSession host_session {
+		public weak LocalHostSession host_session {
 			get;
 			construct;
 		}
@@ -1305,10 +1478,11 @@ namespace Frida {
 		protected virtual void on_event (string type, Json.Array event) {
 		}
 
-		protected async Json.Node call (string method, Json.Node[] args, Cancellable? cancellable) throws Error, IOError {
+		protected async Json.Node call (string method, Json.Node[] args, Bytes? data, Cancellable? cancellable)
+				throws Error, IOError {
 			yield ensure_loaded (cancellable);
 
-			return yield rpc_client.call (method, args, cancellable);
+			return yield rpc_client.call (method, args, data, cancellable);
 		}
 
 		protected async void post (Json.Node message, Cancellable? cancellable) throws Error, IOError {
@@ -1478,9 +1652,11 @@ namespace Frida {
 				printerr ("%s\n", json);
 		}
 
-		private async void post_rpc_message (string json, Cancellable? cancellable) throws Error, IOError {
+		private async void post_rpc_message (string json, Bytes? data, Cancellable? cancellable) throws Error, IOError {
+			var has_data = data != null;
+			var data_param = has_data ? data.get_data () : new uint8[0];
 			try {
-				yield session.post_messages ({ AgentMessage (SCRIPT, script, json, false, {}) }, 0, cancellable);
+				yield session.post_messages ({ AgentMessage (SCRIPT, script, json, has_data, data_param) }, 0, cancellable);
 			} catch (GLib.Error e) {
 				throw_dbus_error (e);
 			}
@@ -1509,8 +1685,9 @@ namespace Frida {
 
 	internal delegate bool UninjectPredicate ();
 
+#if HAVE_FRUITY_BACKEND || HAVE_DROIDY_BACKEND
 	internal async DBusConnection establish_direct_connection (TransportBroker broker, AgentSessionId id,
-			ChannelProvider channel_provider, Cancellable? cancellable) throws Error, IOError {
+			HostChannelProvider channel_provider, Cancellable? cancellable) throws Error, IOError {
 		uint16 port;
 		string token;
 		try {
@@ -1532,4 +1709,5 @@ namespace Frida {
 			throw new Error.TRANSPORT ("%s", e.message);
 		}
 	}
+#endif
 }

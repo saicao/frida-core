@@ -10,6 +10,7 @@ namespace Frida.HostSessionTest {
 			h.run ();
 		});
 
+#if HAVE_LOCAL_BACKEND
 		GLib.Test.add_func ("/HostSession/Manual/full-cycle", () => {
 			var h = new Harness.without_timeout ((h) => Service.Manual.full_cycle.begin (h as Harness));
 			h.run ();
@@ -34,7 +35,9 @@ namespace Frida.HostSessionTest {
 			var h = new Harness.without_timeout ((h) => Service.Manual.torture.begin (h as Harness));
 			h.run ();
 		});
+#endif
 
+#if HAVE_FRUITY_BACKEND
 		GLib.Test.add_func ("/HostSession/Fruity/Plist/can-construct-from-xml-document", () => {
 			Fruity.Plist.can_construct_from_xml_document ();
 		});
@@ -42,6 +45,12 @@ namespace Frida.HostSessionTest {
 		GLib.Test.add_func ("/HostSession/Fruity/Plist/to-xml-yields-complete-document", () => {
 			Fruity.Plist.to_xml_yields_complete_document ();
 		});
+
+#if DARWIN
+		GLib.Test.add_func ("/HostSession/Fruity/Plist/output-matches-apple-implementation", () => {
+			Fruity.Plist.output_matches_apple_implementation ();
+		});
+#endif
 
 		GLib.Test.add_func ("/HostSession/Fruity/backend", () => {
 			var h = new Harness ((h) => Fruity.backend.begin (h as Harness));
@@ -58,6 +67,18 @@ namespace Frida.HostSessionTest {
 			h.run ();
 		});
 
+		GLib.Test.add_func ("/HostSession/Fruity/Manual/Xpc/list", () => {
+			var h = new Harness ((h) => Fruity.Manual.Xpc.list.begin (h as Harness));
+			h.run ();
+		});
+
+		GLib.Test.add_func ("/HostSession/Fruity/Manual/Xpc/launch", () => {
+			var h = new Harness ((h) => Fruity.Manual.Xpc.launch.begin (h as Harness));
+			h.run ();
+		});
+#endif
+
+#if HAVE_DROIDY_BACKEND
 		GLib.Test.add_func ("/HostSession/Droidy/backend", () => {
 			var h = new Harness ((h) => Droidy.backend.begin (h as Harness));
 			h.run ();
@@ -67,7 +88,9 @@ namespace Frida.HostSessionTest {
 			var h = new Harness ((h) => Droidy.injector.begin (h as Harness));
 			h.run ();
 		});
+#endif
 
+#if HAVE_LOCAL_BACKEND
 #if LINUX
 		GLib.Test.add_func ("/HostSession/Linux/backend", () => {
 			var h = new Harness ((h) => Linux.backend.begin (h as Harness));
@@ -96,7 +119,7 @@ namespace Frida.HostSessionTest {
 			"execvp",
 			"execve",
 		};
-		if (Gum.Module.find_export_by_name (null, "execvpe") != null) {
+		if (Gum.Module.find_global_export_by_name ("execvpe") != 0) {
 			exec_symbol_names += "execvpe";
 		}
 		foreach (var fork_symbol_name in fork_symbol_names) {
@@ -162,6 +185,18 @@ namespace Frida.HostSessionTest {
 
 		GLib.Test.add_func ("/HostSession/Darwin/ExitMonitor/abort-from-js-thread-should-not-deadlock", () => {
 			var h = new Harness ((h) => Darwin.ExitMonitor.abort_from_js_thread_should_not_deadlock.begin (h as Harness));
+			h.run ();
+		});
+
+		GLib.Test.add_func ("/HostSession/Darwin/UnwindSitter/exceptions-on-swizzled-objc-methods-should-be-caught", () => {
+			var h = new Harness ((h) =>
+				Darwin.UnwindSitter.exceptions_on_swizzled_objc_methods_should_be_caught.begin (h as Harness));
+			h.run ();
+		});
+
+		GLib.Test.add_func ("/HostSession/Darwin/UnwindSitter/exceptions-on-intercepted-objc-methods-should-be-caught", () => {
+			var h = new Harness ((h) =>
+				Darwin.UnwindSitter.exceptions_on_intercepted_objc_methods_should_be_caught.begin (h as Harness));
 			h.run ();
 		});
 
@@ -301,16 +336,18 @@ namespace Frida.HostSessionTest {
 			h.run ();
 		});
 
+		GLib.Test.add_func ("/HostSession/Local/latency-should-be-nominal", () => {
+			var h = new Harness ((h) => Local.latency_should_be_nominal.begin (h as Harness));
+			h.run ();
+		});
+#endif // HAVE_LOCAL_BACKEND
+
 		GLib.Test.add_func ("/HostSession/start-stop-fast", () => {
 			var h = new Harness ((h) => start_stop_fast.begin (h as Harness));
 			h.run ();
 		});
 
-		GLib.Test.add_func ("/HostSession/Local/latency-should-be-nominal", () => {
-			var h = new Harness ((h) => Local.latency_should_be_nominal.begin (h as Harness));
-			h.run ();
-		});
-
+#if HAVE_LOCAL_BACKEND && HAVE_SOCKET_BACKEND && !ANDROID
 		Connectivity.Strategy[] strategies = new Connectivity.Strategy[] {
 			SERVER,
 		};
@@ -345,7 +382,7 @@ namespace Frida.HostSessionTest {
 				h.run ();
 			});
 		}
-
+#endif
 	}
 
 	namespace Service {
@@ -359,7 +396,6 @@ namespace Frida.HostSessionTest {
 				h.assert_no_providers_available ();
 
 				yield h.service.start ();
-				h.assert_no_providers_available ();
 				yield h.process_events ();
 				h.assert_n_providers_available (1);
 
@@ -392,7 +428,7 @@ namespace Frida.HostSessionTest {
 			h.done ();
 		}
 
-		private class StubBackend : Object, HostSessionBackend {
+		private sealed class StubBackend : Object, HostSessionBackend {
 			private StubProvider provider = new StubProvider ();
 
 			public async void start (Cancellable? cancellable) {
@@ -412,7 +448,7 @@ namespace Frida.HostSessionTest {
 			}
 		}
 
-		private class StubProvider : Object, HostSessionProvider {
+		private sealed class StubProvider : Object, HostSessionProvider {
 			public string id {
 				get { return "stub"; }
 			}
@@ -441,8 +477,30 @@ namespace Frida.HostSessionTest {
 					Cancellable? cancellable) throws Error, IOError {
 				throw new Error.NOT_SUPPORTED ("Not implemented");
 			}
+
+			public void unlink_agent_session (HostSession host_session, AgentSessionId id) {
+				assert_not_reached ();
+			}
+
+			public async IOStream link_channel (HostSession host_session, ChannelId id, Cancellable? cancellable)
+					throws Error, IOError {
+				throw new Error.NOT_SUPPORTED ("Not implemented");
+			}
+
+			public void unlink_channel (HostSession host_session, ChannelId id) {
+				assert_not_reached ();
+			}
+
+			public async ServiceSession link_service_session (HostSession host_session, ServiceSessionId id,
+					Cancellable? cancellable) throws Error, IOError {
+				throw new Error.NOT_SUPPORTED ("Not implemented");
+			}
+
+			public void unlink_service_session (HostSession host_session, ServiceSessionId id) {
+			}
 		}
 
+#if HAVE_LOCAL_BACKEND
 		namespace Manual {
 
 			private static async void full_cycle (Harness h) {
@@ -567,7 +625,7 @@ namespace Frida.HostSessionTest {
 
 				try {
 					script = yield session.create_script ("""
-						const puts = new NativeFunction(Module.getExportByName(null, 'puts'), 'int', ['pointer']);
+						const puts = new NativeFunction(Module.getGlobalExportByName('puts'), 'int', ['pointer']);
 						let i = 1;
 						setInterval(() => {
 						  puts(Memory.allocUtf8String('hello' + i++));
@@ -902,9 +960,11 @@ namespace Frida.HostSessionTest {
 			}
 
 		}
+#endif // HAVE_LOCAL_BACKEND
 
 	}
 
+#if HAVE_LOCAL_BACKEND
 	private static async void resource_leaks (Harness h) {
 		try {
 			var device_manager = new DeviceManager ();
@@ -958,23 +1018,6 @@ namespace Frida.HostSessionTest {
 		yield;
 	}
 
-	private static async void start_stop_fast (Harness h) {
-		var device_manager = new DeviceManager ();
-		device_manager.enumerate_devices.begin ();
-
-		var timer = new Timer ();
-		try {
-			yield device_manager.close ();
-		} catch (IOError e) {
-			assert_not_reached ();
-		}
-		if (GLib.Test.verbose ()) {
-			printerr ("close() took %u ms\n", (uint) (timer.elapsed () * 1000.0));
-		}
-
-		h.done ();
-	}
-
 	namespace Local {
 
 		private static async void latency_should_be_nominal (Harness h) {
@@ -996,9 +1039,33 @@ namespace Frida.HostSessionTest {
 		}
 
 	}
+#endif // HAVE_LOCAL_BACKEND
 
+	private static async void start_stop_fast (Harness h) {
+		var device_manager = new DeviceManager ();
+		device_manager.enumerate_devices.begin ();
+
+		var timer = new Timer ();
+		try {
+			yield device_manager.close ();
+		} catch (IOError e) {
+			assert_not_reached ();
+		}
+		if (GLib.Test.verbose ()) {
+			printerr ("close() took %u ms\n", (uint) (timer.elapsed () * 1000.0));
+		}
+
+		h.done ();
+	}
+
+#if HAVE_LOCAL_BACKEND
 	namespace Connectivity {
+		private enum Strategy {
+			SERVER,
+			PEER
+		}
 
+#if HAVE_SOCKET_BACKEND && !ANDROID
 		private static async void flawless (Harness h, Strategy strategy) {
 			uint seen_disruptions;
 			yield run_reliability_scenario (h, strategy, (message, direction) => FORWARD, out seen_disruptions);
@@ -1045,11 +1112,6 @@ namespace Frida.HostSessionTest {
 				return FORWARD;
 			}, out seen_disruptions);
 			assert (seen_disruptions == 1);
-		}
-
-		private enum Strategy {
-			SERVER,
-			PEER
 		}
 
 		private static async void run_reliability_scenario (Harness h, Strategy strategy, owned ChaosProxy.Inducer on_message,
@@ -1105,7 +1167,7 @@ namespace Frida.HostSessionTest {
 				if (strategy == PEER) {
 					yield session.setup_peer_connection ();
 
-					peer_connection = ((DBusProxy) session.session).g_connection;
+					peer_connection = session._get_connection ();
 					bool disrupting = false;
 					var main_context = MainContext.ref_thread_default ();
 					filter_id = peer_connection.add_filter ((conn, message, incoming) => {
@@ -1207,7 +1269,7 @@ namespace Frida.HostSessionTest {
 			h.done ();
 		}
 
-		private class ChaosProxy : Object {
+		private sealed class ChaosProxy : Object {
 			public uint16 proxy_port {
 				get {
 					return _proxy_port;
@@ -1389,6 +1451,7 @@ namespace Frida.HostSessionTest {
 
 			h.done ();
 		}
+#endif // HAVE_SOCKET_BACKEND
 
 		private async void measure_latency (Harness h, Device device, Strategy strategy) throws GLib.Error {
 			h.disable_timeout ();
@@ -1492,8 +1555,11 @@ namespace Frida.HostSessionTest {
 		}
 
 		private static async void spawn (Harness h) {
-			if ((Frida.Test.os () == Frida.Test.OS.ANDROID || Frida.Test.os_arch_suffix () == "-linux-arm") &&
-					!GLib.Test.slow ()) {
+			if (!GLib.Test.slow () && (
+						Frida.Test.os () == Frida.Test.OS.ANDROID ||
+						Frida.Test.os_arch_suffix () == "-linux-armbe8" ||
+						Frida.Test.os_arch_suffix () == "-linux-arm64be"
+					)) {
 				stdout.printf ("<skipping, run in slow mode> ");
 				h.done ();
 				return;
@@ -1541,12 +1607,12 @@ namespace Frida.HostSessionTest {
 				});
 
 				var script_id = yield session.create_script ("""
-					var write = new NativeFunction(Module.getExportByName(null, 'write'), 'int', ['int', 'pointer', 'int']);
+					var write = new NativeFunction(Module.getGlobalExportByName('write'), 'int', ['int', 'pointer', 'int']);
 					var message = Memory.allocUtf8String('Hello stdout');
 					write(1, message, 12);
 					for (const m of Process.enumerateModules()) {
 					  if (m.name.startsWith('libc')) {
-					    Interceptor.attach (Module.getExportByName(m.name, 'sleep'), {
+					    Interceptor.attach (m.getExportByName('sleep'), {
 					      onEnter(args) {
 					        send({ seconds: args[0].toInt32() });
 					      }
@@ -1778,18 +1844,19 @@ namespace Frida.HostSessionTest {
 				});
 
 				var script_id = yield session.create_script ("""
-					const write = new NativeFunction(Module.getExportByName('libSystem.B.dylib', 'write'), 'int', ['int', 'pointer', 'int']);
+					const libsystem = Process.getModuleByName('libSystem.B.dylib');
+					const write = new NativeFunction(libsystem.getExportByName('write'), 'int', ['int', 'pointer', 'int']);
 					const message = Memory.allocUtf8String('Hello stdout');
-					const cout = Module.getExportByName('libc++.1.dylib', '_ZNSt3__14coutE').readPointer();
+					const cout = Process.getModuleByName('libc++.1.dylib').getExportByName('_ZNSt3__14coutE').readPointer();
 					const properlyInitialized = !cout.isNull();
 					write(1, message, 12);
-					const getMainPtr = Module.findExportByName(null, 'CFRunLoopGetMain');
+					const getMainPtr = Module.findGlobalExportByName('CFRunLoopGetMain');
 					if (getMainPtr !== null) {
 					  const getMain = new NativeFunction(getMainPtr, 'pointer', []);
 					  getMain();
 					}
 					const sleepFuncName = (Process.arch === 'ia32') ? 'sleep$UNIX2003' : 'sleep';
-					Interceptor.attach(Module.getExportByName('libSystem.B.dylib', sleepFuncName), {
+					Interceptor.attach(libsystem.getExportByName(sleepFuncName), {
 					  onEnter(args) {
 					    send({ seconds: args[0].toInt32(), initialized: properlyInitialized });
 					  }
@@ -2033,7 +2100,7 @@ namespace Frida.HostSessionTest {
 			return result;
 		}
 
-		private class Range {
+		private sealed class Range {
 			public string start;
 			public string end;
 			public string protection;
@@ -2063,7 +2130,11 @@ namespace Frida.HostSessionTest {
 						  }
 						};
 
-						const abort = new NativeFunction(Module.getExportByName('/usr/lib/system/libsystem_c.dylib', 'abort'), 'void', [], { exceptions: 'propagate' });
+						const abort = new NativeFunction(
+							Process.getModuleByName('/usr/lib/system/libsystem_c.dylib').getExportByName('abort'),
+							'void',
+							[],
+							{ exceptions: 'propagate' });
 						setTimeout(() => { abort(); }, 50);
 						""");
 
@@ -2090,6 +2161,138 @@ namespace Frida.HostSessionTest {
 						waiting = false;
 					}
 					assert_true (received_message == "{\"type\":\"send\",\"payload\":\"dispose\"}");
+					assert_true (detach_reason == "FRIDA_SESSION_DETACH_REASON_PROCESS_TERMINATED");
+
+					h.done ();
+				} catch (GLib.Error e) {
+					printerr ("ERROR: %s\n", e.message);
+				}
+			}
+		}
+
+		namespace UnwindSitter {
+			private static async void exceptions_on_swizzled_objc_methods_should_be_caught (Harness h) {
+				try {
+					var device_manager = new DeviceManager ();
+					var device = yield device_manager.get_device_by_type (DeviceType.LOCAL);
+					var process = Frida.Test.Process.create (
+						Frida.Test.Labrats.path_to_executable ("exception-catcher"));
+
+					/*
+					 * TODO: Improve injector to handle injection into a process that hasn't yet finished initializing.
+					 */
+					Thread.usleep (50000);
+
+					var session = yield device.attach (process.id);
+					var script = yield session.create_script ("""
+						const meth = ObjC.classes.NSBundle['- initWithURL:'];
+						const origImpl = meth.implementation;
+						meth.implementation = ObjC.implement(meth, function (handle, selector, url) {
+						  return origImpl(handle, selector, NULL);
+						});
+						Interceptor.attach(Module.getGlobalExportByName('abort'), function () {
+						  send('abort');
+						  Thread.sleep(1);
+						});
+						Interceptor.attach(Module.getGlobalExportByName('__exit'), function (args) {
+						  send(`exit(${args[0].toUInt32()})`);
+						  Thread.sleep(1);
+						});
+						""");
+
+					string? detach_reason = null;
+					string? received_message = null;
+					bool waiting = false;
+					session.detached.connect (reason => {
+						detach_reason = reason.to_string ();
+						if (waiting)
+							exceptions_on_swizzled_objc_methods_should_be_caught.callback ();
+					});
+					script.message.connect ((message, data) => {
+						assert_null (received_message);
+						received_message = message;
+						if (waiting)
+							exceptions_on_swizzled_objc_methods_should_be_caught.callback ();
+					});
+
+					yield script.load ();
+					yield device.resume (process.id);
+
+					while (received_message == null || detach_reason == null) {
+						waiting = true;
+						yield;
+						waiting = false;
+					}
+					assert_true (received_message == "{\"type\":\"send\",\"payload\":\"exit(0)\"}");
+					assert_true (detach_reason == "FRIDA_SESSION_DETACH_REASON_PROCESS_TERMINATED");
+
+					h.done ();
+				} catch (GLib.Error e) {
+					printerr ("ERROR: %s\n", e.message);
+				}
+			}
+
+			private static async void exceptions_on_intercepted_objc_methods_should_be_caught (Harness h) {
+				try {
+					var device_manager = new DeviceManager ();
+					var device = yield device_manager.get_device_by_type (DeviceType.LOCAL);
+					var process = Frida.Test.Process.create (
+						Frida.Test.Labrats.path_to_executable ("exception-catcher"));
+
+					/*
+					 * TODO: Improve injector to handle injection into a process that hasn't yet finished initializing.
+					 */
+					Thread.usleep (50000);
+
+					var session = yield device.attach (process.id);
+					var script = yield session.create_script ("""
+						const { NSBundle } = ObjC.classes;
+						const meth = NSBundle['+ bundleWithURL:'];
+						const methInner = NSBundle['- initWithURL:'];
+						Interceptor.attach(meth.implementation, {
+						  onEnter(args) {
+						    args[2] = NULL;
+						  }
+						});
+						Interceptor.attach(methInner.implementation, {
+						  onEnter(args) {
+						    args[2] = NULL;
+						  }
+						});
+						Interceptor.attach(Module.getGlobalExportByName('abort'), function () {
+						  send('abort');
+						  Thread.sleep(1);
+						});
+						Interceptor.attach(Module.getGlobalExportByName('__exit'), function (args) {
+						  send(`exit(${args[0].toUInt32()})`);
+						  Thread.sleep(1);
+						});
+						""");
+
+					string? detach_reason = null;
+					string? received_message = null;
+					bool waiting = false;
+					session.detached.connect (reason => {
+						detach_reason = reason.to_string ();
+						if (waiting)
+							exceptions_on_intercepted_objc_methods_should_be_caught.callback ();
+					});
+					script.message.connect ((message, data) => {
+						assert_null (received_message);
+						received_message = message;
+						if (waiting)
+							exceptions_on_intercepted_objc_methods_should_be_caught.callback ();
+					});
+
+					yield script.load ();
+					yield device.resume (process.id);
+
+					while (received_message == null || detach_reason == null) {
+						waiting = true;
+						yield;
+						waiting = false;
+					}
+					assert_true (received_message == "{\"type\":\"send\",\"payload\":\"exit(0)\"}");
 					assert_true (detach_reason == "FRIDA_SESSION_DETACH_REASON_PROCESS_TERMINATED");
 
 					h.done ();
@@ -2132,7 +2335,10 @@ namespace Frida.HostSessionTest {
 			switch (Frida.Test.os ())
 			{
 				case Frida.Test.OS.MACOS:
-					suffix = "macos";
+					if (Frida.Test.cpu () == ARM_64)
+						suffix = (Gum.query_ptrauth_support () == SUPPORTED) ? "macos-arm64e" : "macos";
+					else
+						suffix = "macos";
 					break;
 				case Frida.Test.OS.TVOS:
 					suffix = "tvos";
@@ -2148,7 +2354,10 @@ namespace Frida.HostSessionTest {
 		private static string target_name_of_other (string name) {
 			string suffix;
 			if (Frida.Test.os () == Frida.Test.OS.MACOS) {
-				suffix = "macos32";
+				if (Frida.Test.cpu () == ARM_64)
+					suffix = (Gum.query_ptrauth_support () == SUPPORTED) ? "macos" : "macos-arm64e";
+				else
+					suffix = "macos32";
 			} else {
 				suffix = (Gum.query_ptrauth_support () == SUPPORTED) ? "ios64" : "ios32";
 			}
@@ -2276,7 +2485,8 @@ namespace Frida.HostSessionTest {
 
 					printerr ("session.create_script()\n");
 					var script = yield session.create_script ("""
-						Interceptor.attach(Module.getExportByName('UIKit', 'UIApplicationMain'), () => {
+						Interceptor.attach(
+							Process.getModuleByName('UIKit').getExportByName('UIApplicationMain'), () => {
 						  send('UIApplicationMain');
 						});
 						""");
@@ -2396,12 +2606,12 @@ namespace Frida.HostSessionTest {
 				});
 
 				var script_id = yield session.create_script ("""
-					var write = new NativeFunction(Module.getExportByName(null, 'write'), 'int', ['int', 'pointer', 'int']);
+					var write = new NativeFunction(Module.getGlobalExportByName('write'), 'int', ['int', 'pointer', 'int']);
 					var message = Memory.allocUtf8String('Hello stdout');
 					write(1, message, 12);
 					for (const m of Process.enumerateModules()) {
 					  if (m.name.startsWith('libc')) {
-					    Interceptor.attach (Module.getExportByName(m.name, 'sleep'), {
+					    Interceptor.attach (m.getExportByName('sleep'), {
 					      onEnter(args) {
 					        send({ seconds: args[0].toInt32() });
 					      }
@@ -2509,7 +2719,7 @@ namespace Frida.HostSessionTest {
 				});
 				yield parent_session.enable_child_gating ();
 				var parent_script = yield parent_session.create_script ("""
-					Interceptor.attach(Module.getExportByName(null, 'puts'), {
+					Interceptor.attach(Module.getGlobalExportByName('puts'), {
 					  onEnter(args) {
 					    send('[PARENT] ' + args[0].readUtf8String());
 					  }
@@ -2553,7 +2763,7 @@ namespace Frida.HostSessionTest {
 						run_fork_scenario.callback ();
 				});
 				var child_script = yield child_session.create_script ("""
-					Interceptor.attach(Module.getExportByName(null, 'puts'), {
+					Interceptor.attach(Module.getGlobalExportByName('puts'), {
 					  onEnter(args) {
 					    send('[CHILD] ' + args[0].readUtf8String());
 					  }
@@ -2706,7 +2916,7 @@ namespace Frida.HostSessionTest {
 						run_fork_plus_exec_scenario.callback ();
 				});
 				var script = yield child_session_post_exec.create_script ("""
-					Interceptor.attach(Module.getExportByName(null, 'puts'), {
+					Interceptor.attach(Module.getGlobalExportByName('puts'), {
 					  onEnter(args) {
 					    send(args[0].readUtf8String());
 					  }
@@ -2835,7 +3045,7 @@ namespace Frida.HostSessionTest {
 						run_exec_scenario.callback ();
 				});
 				var script = yield post_exec_session.create_script ("""
-					Interceptor.attach(Module.getExportByName(null, 'puts'), {
+					Interceptor.attach(Module.getGlobalExportByName('puts'), {
 					  onEnter(args) {
 					    send(args[0].readUtf8String());
 					  }
@@ -3013,7 +3223,7 @@ namespace Frida.HostSessionTest {
 						run_posix_spawn_scenario.callback ();
 				});
 				var script = yield child_session.create_script ("""
-					Interceptor.attach(Module.getExportByName(null, 'puts'), {
+					Interceptor.attach(Module.getGlobalExportByName('puts'), {
 					  onEnter(args) {
 					    send(args[0].readUtf8String());
 					  }
@@ -3155,12 +3365,13 @@ namespace Frida.HostSessionTest {
 				var script_id = yield session.create_script ("""
 					const STD_OUTPUT_HANDLE = -11;
 					const winAbi = (Process.pointerSize === 4) ? 'stdcall' : 'win64';
-					const GetStdHandle = new NativeFunction(Module.getExportByName('kernel32.dll', 'GetStdHandle'), 'pointer', ['int'], winAbi);
-					const WriteFile = new NativeFunction(Module.getExportByName('kernel32.dll', 'WriteFile'), 'int', ['pointer', 'pointer', 'uint', 'pointer', 'pointer'], winAbi);
+					const kernel32 = Process.getModuleByName('kernel32.dll');
+					const GetStdHandle = new NativeFunction(kernel32.getExportByName('GetStdHandle'), 'pointer', ['int'], winAbi);
+					const WriteFile = new NativeFunction(kernel32.getExportByName('WriteFile'), 'int', ['pointer', 'pointer', 'uint', 'pointer', 'pointer'], winAbi);
 					const stdout = GetStdHandle(STD_OUTPUT_HANDLE);
 					const message = Memory.allocUtf8String('Hello stdout');
 					const success = WriteFile(stdout, message, 12, NULL, NULL);
-					Interceptor.attach(Module.getExportByName('user32.dll', 'GetMessageW'), {
+					Interceptor.attach(Process.getModuleByName('user32.dll').getExportByName('GetMessageW'), {
 					  onEnter(args) {
 					    send('GetMessage');
 					  }
@@ -3279,7 +3490,7 @@ namespace Frida.HostSessionTest {
 						create_process.callback ();
 				});
 				var script = yield child_session.create_script ("""
-					Interceptor.attach(Module.getExportByName('kernel32.dll', 'OutputDebugStringW'), {
+					Interceptor.attach(Process.getModuleByName('kernel32.dll').getExportByName('OutputDebugStringW'), {
 					  onEnter(args) {
 					    send(args[0].readUtf16String());
 					  }
@@ -3332,7 +3543,9 @@ namespace Frida.HostSessionTest {
 
 	}
 #endif
+#endif // HAVE_LOCAL_BACKEND
 
+#if HAVE_FRUITY_BACKEND
 	namespace Fruity {
 
 		private static async void backend (Harness h) {
@@ -3351,16 +3564,17 @@ namespace Frida.HostSessionTest {
 #endif
 
 			Variant? icon = prov.icon;
-			assert_nonnull (icon);
-			var dict = new VariantDict (icon);
-			int64 width, height;
-			assert_true (dict.lookup ("width", "x", out width));
-			assert_true (dict.lookup ("height", "x", out height));
-			assert_true (width == 16);
-			assert_true (height == 16);
-			VariantIter image;
-			assert_true (dict.lookup ("image", "ay", out image));
-			assert_true (image.n_children () == width * height * 4);
+			if (icon != null) {
+				var dict = new VariantDict (icon);
+				int64 width, height;
+				assert_true (dict.lookup ("width", "x", out width));
+				assert_true (dict.lookup ("height", "x", out height));
+				assert_true (width == 16);
+				assert_true (height == 16);
+				VariantIter image;
+				assert_true (dict.lookup ("image", "ay", out image));
+				assert_true (image.n_children () == width * height * 4);
+			}
 
 			try {
 				Cancellable? cancellable = null;
@@ -3460,6 +3674,9 @@ namespace Frida.HostSessionTest {
 
 		namespace Manual {
 
+			private const string DEVICE_ID = "<device-id>";
+			private const string APP_ID = "<app-id>";
+
 			private static async void lockdown (Harness h) {
 				if (!GLib.Test.slow ()) {
 					stdout.printf ("<skipping, run in slow mode with iOS device connected> ");
@@ -3469,15 +3686,13 @@ namespace Frida.HostSessionTest {
 
 				h.disable_timeout ();
 
-				var device_id = "<device-id>";
-				var app_id = "<app-id>";
 				string? target_name = null;
 				uint target_pid = 0;
 
 				var device_manager = new DeviceManager ();
 
 				try {
-					var device = yield device_manager.get_device_by_id (device_id);
+					var device = yield device_manager.get_device_by_id (DEVICE_ID);
 
 					device.output.connect ((pid, fd, data) => {
 						var chars = data.get_data ();
@@ -3497,9 +3712,21 @@ namespace Frida.HostSessionTest {
 
 					var timer = new Timer ();
 
+					printerr ("device.query_system_parameters()");
+					timer.reset ();
+					var p = yield device.query_system_parameters ();
+					printerr (" => got parameters, took %u ms\n", (uint) (timer.elapsed () * 1000.0));
+					var iter = HashTableIter<string, Variant> (p);
+					string k;
+					Variant v;
+					while (iter.next (out k, out v))
+						printerr ("%s: %s\n", k, v.print (false));
+
 					printerr ("device.enumerate_applications()");
 					timer.reset ();
-					var apps = yield device.enumerate_applications ();
+					var opts = new ApplicationQueryOptions ();
+					opts.scope = FULL;
+					var apps = yield device.enumerate_applications (opts);
 					printerr (" => got %d apps, took %u ms\n", apps.size (), (uint) (timer.elapsed () * 1000.0));
 					if (GLib.Test.verbose ()) {
 						var length = apps.size ();
@@ -3522,7 +3749,7 @@ namespace Frida.HostSessionTest {
 					} else {
 						printerr ("device.spawn()");
 						timer.reset ();
-						pid = yield device.spawn (app_id);
+						pid = yield device.spawn (APP_ID);
 						printerr (" => pid=%u, took %u ms\n", pid, (uint) (timer.elapsed () * 1000.0));
 					}
 
@@ -3534,7 +3761,7 @@ namespace Frida.HostSessionTest {
 					printerr ("session.create_script()");
 					timer.reset ();
 					var script = yield session.create_script ("""
-						send(Module.getExportByName(null, 'open'));
+						send(Module.getGlobalExportByName('open'));
 						""");
 					printerr (" => took %u ms\n", (uint) (timer.elapsed () * 1000.0));
 
@@ -3572,7 +3799,145 @@ namespace Frida.HostSessionTest {
 					printerr ("\nFAIL: %s\n\n", e.message);
 				}
 
+				try {
+					yield device_manager.close ();
+				} catch (IOError e) {
+					assert_not_reached ();
+				}
+
 				h.done ();
+			}
+
+			namespace Xpc {
+
+				private static async void list (Harness h) {
+					if (!GLib.Test.slow ()) {
+						stdout.printf ("<skipping, run in slow mode with iOS device connected> ");
+						h.done ();
+						return;
+					}
+
+					var device_manager = new DeviceManager ();
+
+					try {
+						var timer = new Timer ();
+						var device = yield device_manager.get_device_by_id (DEVICE_ID);
+						printerr ("[*] Got device in %u ms\n", (uint) (timer.elapsed () * 1000.0));
+
+						timer.reset ();
+						var appservice = yield device.open_service ("xpc:com.apple.coredevice.appservice");
+						printerr ("[*] Opened service in %u ms\n", (uint) (timer.elapsed () * 1000.0));
+
+						var parameters = new HashTable<string, Variant> (str_hash, str_equal);
+						parameters["CoreDevice.featureIdentifier"] = "com.apple.coredevice.feature.listprocesses";
+						parameters["CoreDevice.action"] = new HashTable<string, Variant> (str_hash, str_equal);
+						parameters["CoreDevice.input"] = new HashTable<string, Variant> (str_hash, str_equal);
+						timer.reset ();
+						var response = yield appservice.request (parameters);
+						printerr ("[*] Made request in %u ms\n", (uint) (timer.elapsed () * 1000.0));
+						printerr ("Got response: %s\n", response.print (true));
+					} catch (GLib.Error e) {
+						printerr ("\nFAIL: %s\n\n", e.message);
+						yield;
+					}
+
+					h.done ();
+				}
+
+				private static async void launch (Harness h) {
+					if (!GLib.Test.slow ()) {
+						stdout.printf ("<skipping, run in slow mode with iOS device connected> ");
+						h.done ();
+						return;
+					}
+
+					var device_manager = new DeviceManager ();
+
+					try {
+						var timer = new Timer ();
+						var device = yield device_manager.get_device_by_id (DEVICE_ID);
+						printerr ("[*] Got device in %u ms\n", (uint) (timer.elapsed () * 1000.0));
+
+						timer.reset ();
+						var appservice = yield device.open_service ("xpc:com.apple.coredevice.appservice");
+						printerr ("[*] Opened service in %u ms\n", (uint) (timer.elapsed () * 1000.0));
+
+						var stdio_stream = yield device.open_channel ("tcp:com.apple.coredevice.openstdiosocket");
+						uint8 stdio_uuid[16];
+						size_t n;
+						yield stdio_stream.get_input_stream ().read_all_async (stdio_uuid, Priority.DEFAULT, null, out n);
+
+						var parameters = new HashTable<string, Variant> (str_hash, str_equal);
+						parameters["CoreDevice.featureIdentifier"] = "com.apple.coredevice.feature.launchapplication";
+						parameters["CoreDevice.action"] = new HashTable<string, Variant> (str_hash, str_equal);
+
+						var standard_input = Variant.new_from_data<void> (new VariantType ("ay"), stdio_uuid, true);
+						var standard_output = standard_input;
+						var standard_error = standard_output;
+						var input = new Variant.parsed (@"""{
+								'applicationSpecifier': <{
+									'bundleIdentifier': <{
+										'_0': <'$APP_ID'>
+									}>
+								}>,
+								'options': <{
+									'arguments': <@av []>,
+									'environmentVariables': <@a{sv} {}>,
+									'standardIOUsesPseudoterminals': <true>,
+									'startStopped': <false>,
+									'terminateExisting': <true>,
+									'user': <{
+										'active': <true>
+									}>,
+									'platformSpecificOptions': <
+										b'<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict/></plist>'
+									>
+								}>,
+								'standardIOIdentifiers': <{
+									'standardInput': <('uuid', %@ay)>,
+									'standardOutput': <('uuid', %@ay)>,
+									'standardError': <('uuid', %@ay)>
+								}>
+							}""",
+							standard_input,
+							standard_output,
+							standard_error);
+						printerr ("input: %s\n", input.print (true));
+						parameters["CoreDevice.input"] = input;
+						timer.reset ();
+						var response = yield appservice.request (parameters);
+						printerr ("[*] Made request in %u ms\n", (uint) (timer.elapsed () * 1000.0));
+						printerr ("Got response: %s\n", response.print (true));
+
+						process_stdio.begin (stdio_stream);
+
+						// Wait forever...
+						h.disable_timeout ();
+						yield;
+					} catch (GLib.Error e) {
+						printerr ("\nFAIL: %s\n\n", e.message);
+						yield;
+					}
+
+					h.done ();
+				}
+
+				private async void process_stdio (IOStream stream) {
+					try {
+						var input = new DataInputStream (stream.get_input_stream ());
+						while (true) {
+							var line = yield input.read_line_async ();
+							if (line == null) {
+								printerr ("process_stdio: EOF\n");
+								break;
+							}
+							printerr ("process_stdio got line: %s\n", line);
+						}
+					} catch (GLib.Error e) {
+						printerr ("process_stdio: %s\n", e.message);
+					}
+				}
+
 			}
 
 		}
@@ -3700,10 +4065,72 @@ namespace Frida.HostSessionTest {
 				assert_true (actual_xml == expected_xml);
 			}
 
+#if DARWIN
+			private static void output_matches_apple_implementation () {
+				var request = new Frida.Fruity.Plist ();
+				request.set_string ("Command", "Lookup");
+
+				var options = new Frida.Fruity.PlistDict ();
+				request.set_dict ("ClientOptions", options);
+
+				var attributes = new Frida.Fruity.PlistArray ();
+				options.set_array ("ReturnAttributes", attributes);
+				attributes.add_string ("ApplicationType");
+				attributes.add_string ("IsAppClip");
+				attributes.add_string ("SBAppTags");
+				attributes.add_string ("CFBundleIdentifier");
+				attributes.add_string ("CFBundleDisplayName");
+				attributes.add_string ("CFBundleShortVersionString");
+				attributes.add_string ("CFBundleVersion");
+				attributes.add_string ("Path");
+				attributes.add_string ("Container");
+				attributes.add_string ("GroupContainers");
+				attributes.add_string ("Entitlements");
+
+				var ids = new Frida.Fruity.PlistArray ();
+				options.set_array ("BundleIDs", ids);
+				ids.add_string ("UUU");
+
+				string? error_message;
+
+				string our_xml = request.to_xml ();
+				uint8[] our_bplist = request.to_binary ();
+
+				uint8[]? apple_bplist = to_binary_using_apple_implementation (our_xml.data, out error_message);
+				if (error_message != null)
+					printerr ("Oops: %s\n", error_message);
+				assert_nonnull (apple_bplist);
+				assert_null (error_message);
+
+				/*
+				try {
+					var home_dir = Environment.get_home_dir ();
+					FileUtils.set_data (Path.build_filename (home_dir, "frida-test-apple.plist"), apple_bplist);
+					FileUtils.set_data (Path.build_filename (home_dir, "frida-test-our.plist"), our_bplist);
+				} catch (FileError e) {
+					assert_not_reached ();
+				}
+				*/
+
+				string? apple_xml = to_xml_using_apple_implementation (our_bplist, out error_message);
+				if (error_message != null)
+					printerr ("Oops: %s\n", error_message);
+				assert_nonnull (apple_xml);
+				assert_null (error_message);
+
+				assert_cmpstr (our_xml, EQ, apple_xml);
+				assert_cmpstr (Base64.encode (our_bplist), EQ, Base64.encode (apple_bplist));
+			}
+
+			private extern uint8[]? to_binary_using_apple_implementation (uint8[] data, out string? error_message);
+			private extern string? to_xml_using_apple_implementation (uint8[] data, out string? error_message);
+#endif
 		}
 
 	}
+#endif // HAVE_FRUITY_BACKEND
 
+#if HAVE_DROIDY_BACKEND
 	namespace Droidy {
 
 		private static async void backend (Harness h) {
@@ -3778,7 +4205,9 @@ namespace Frida.HostSessionTest {
 			h.done ();
 		}
 	}
+#endif // HAVE_DROIDY_BACKEND
 
+#if HAVE_LOCAL_BACKEND
 	private static string parse_string_message_payload (string json) {
 		Json.Object message;
 		try {
@@ -3791,8 +4220,9 @@ namespace Frida.HostSessionTest {
 
 		return message.get_string_member ("payload");
 	}
+#endif
 
-	public class Harness : Frida.Test.AsyncHarness, AgentMessageSink {
+	public sealed class Harness : Frida.Test.AsyncHarness, AgentMessageSink {
 		public signal void message_from_script (AgentScriptId script_id, string message, Bytes? data);
 
 		public HostSessionService service {

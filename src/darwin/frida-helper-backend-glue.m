@@ -86,7 +86,7 @@
 # define CORE_FOUNDATION "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation"
 #endif
 
-typedef struct _FridaHelperContext FridaHelperContext;
+typedef struct _FridaDispatchContext FridaDispatchContext;
 typedef struct _FridaSpawnInstance FridaSpawnInstance;
 typedef guint FridaDyldFlavor;
 typedef struct _FridaSpawnInstanceDyldData FridaSpawnInstanceDyldData;
@@ -106,7 +106,7 @@ typedef union _FridaDebugState FridaDebugState;
 typedef int FridaConvertThreadStateDirection;
 typedef guint FridaAslr;
 
-struct _FridaHelperContext
+struct _FridaDispatchContext
 {
   dispatch_queue_t dispatch_queue;
 };
@@ -183,6 +183,7 @@ struct _FridaSpawnInstance
   GumAddress modern_entry_address;
 
   /* V4+ */
+  GumAddress notify_objc_init;
   GumAddress info_ptr_address;
 
   /* V3- */
@@ -375,9 +376,10 @@ enum _FridaAslr
 };
 
 static FridaSpawnInstance * frida_spawn_instance_new (FridaDarwinHelperBackend * backend);
-static void frida_spawn_instance_free (FridaSpawnInstance * instance);
+static void frida_spawn_instance_close (FridaSpawnInstance * instance);
 static void frida_spawn_instance_resume (FridaSpawnInstance * self);
 
+static void frida_spawn_instance_on_server_cancel (void * context);
 static void frida_spawn_instance_on_server_recv (void * context);
 static gboolean frida_spawn_instance_handle_breakpoint (FridaSpawnInstance * self, FridaBreakpoint * breakpoint, GumDarwinUnifiedThreadState * state);
 static gboolean frida_spawn_instance_handle_dyld_restart (FridaSpawnInstance * self);
@@ -389,12 +391,12 @@ static void frida_spawn_instance_set_libc_initialized (FridaSpawnInstance * self
 static kern_return_t frida_spawn_instance_create_dyld_data (FridaSpawnInstance * self);
 static void frida_spawn_instance_destroy_dyld_data (FridaSpawnInstance * self);
 #if defined (HAVE_IOS) || defined (HAVE_TVOS)
-static gboolean frida_pick_ios_tvos_bootstrapper (const GumModuleDetails * details, gpointer user_data);
+static gboolean frida_pick_ios_tvos_bootstrapper (GumModule * module, gpointer user_data);
 #endif
 static void frida_spawn_instance_unset_helpers (FridaSpawnInstance * self);
 static void frida_spawn_instance_call_set_helpers (FridaSpawnInstance * self, GumDarwinUnifiedThreadState * state, mach_vm_address_t helpers);
 static void frida_spawn_instance_call_dlopen (FridaSpawnInstance * self, GumDarwinUnifiedThreadState * state, mach_vm_address_t lib_name, int mode);
-static gboolean frida_find_cf_initialize (const GumModuleDetails * details, gpointer user_data);
+static gboolean frida_find_cf_initialize (GumModule * module, gpointer user_data);
 static void frida_spawn_instance_call_cf_initialize (FridaSpawnInstance * self, GumDarwinUnifiedThreadState * state);
 static void frida_spawn_instance_set_nth_breakpoint (FridaSpawnInstance * self, guint n, GumAddress break_at, FridaBreakpointRepeat repeat);
 static void frida_spawn_instance_enable_nth_breakpoint (FridaSpawnInstance * self, guint n);
@@ -408,10 +410,11 @@ static void frida_configure_terminal_attributes (gint fd);
 
 static FridaInjectInstance * frida_inject_instance_new (FridaDarwinHelperBackend * backend, guint id, guint pid);
 static FridaInjectInstance * frida_inject_instance_clone (const FridaInjectInstance * instance, guint id);
-static void frida_inject_instance_free (FridaInjectInstance * instance);
+static void frida_inject_instance_close (FridaInjectInstance * instance);
 static gboolean frida_inject_instance_task_did_not_exec (FridaInjectInstance * instance);
 
 static gboolean frida_inject_instance_start_thread (FridaInjectInstance * self, GError ** error);
+static void frida_inject_instance_on_thread_monitor_cancel (void * context);
 static void frida_inject_instance_on_mach_thread_dead (void * context);
 static void frida_inject_instance_join_posix_thread (FridaInjectInstance * self, mach_port_t posix_thread);
 static void frida_inject_instance_on_posix_thread_dead (void * context);
@@ -426,6 +429,8 @@ static void frida_agent_context_emit_mach_stub_code (FridaAgentContext * self, g
 static void frida_agent_context_emit_pthread_stub_code (FridaAgentContext * self, guint8 * code, GumDarwinModuleResolver * resolver,
     GumDarwinMapper * mapper);
 
+static gboolean frida_convert_thread_state_for_task (mach_port_t task, thread_state_flavor_t flavor, gconstpointer in_state,
+    mach_msg_type_number_t in_state_count, gpointer out_state, mach_msg_type_number_t * out_state_count, GError ** error);
 static mach_port_t frida_obtain_thread_port_for_thread_id (mach_port_t task, uint64_t thread_id);
 static kern_return_t frida_get_thread_state (mach_port_t thread, thread_state_flavor_t flavor, gpointer state,
     mach_msg_type_number_t * count);
@@ -757,30 +762,30 @@ permission_denied:
 }
 
 void
-_frida_darwin_helper_backend_create_context (FridaDarwinHelperBackend * self)
+_frida_darwin_helper_backend_create_dispatch_context (FridaDarwinHelperBackend * self)
 {
-  FridaHelperContext * ctx;
+  FridaDispatchContext * ctx;
 
-  ctx = g_slice_new (FridaHelperContext);
+  ctx = g_slice_new (FridaDispatchContext);
   ctx->dispatch_queue = dispatch_queue_create ("re.frida.helper.queue", DISPATCH_QUEUE_SERIAL);
 
-  self->context = ctx;
+  self->dispatch_context = ctx;
 }
 
 void
-_frida_darwin_helper_backend_destroy_context (FridaDarwinHelperBackend * self)
+_frida_darwin_helper_backend_destroy_dispatch_context (FridaDarwinHelperBackend * self)
 {
-  FridaHelperContext * ctx = self->context;
+  FridaDispatchContext * ctx = self->dispatch_context;
 
   dispatch_release (ctx->dispatch_queue);
 
-  g_slice_free (FridaHelperContext, ctx);
+  g_slice_free (FridaDispatchContext, ctx);
 }
 
 void
 _frida_darwin_helper_backend_schedule_on_dispatch_queue (FridaDarwinHelperBackend * self, FridaDarwinHelperBackendDispatchWorker worker, gpointer user_data)
 {
-  FridaHelperContext * ctx = self->context;
+  FridaDispatchContext * ctx = self->dispatch_context;
 
   dispatch_async (ctx->dispatch_queue, ^
   {
@@ -929,7 +934,7 @@ any_failure:
   {
     if (instance->pid != 0)
       kill (instance->pid, SIGKILL);
-    frida_spawn_instance_free (instance);
+    frida_spawn_instance_close (instance);
 
     pid = 0;
 
@@ -1864,7 +1869,7 @@ void
 _frida_darwin_helper_backend_prepare_spawn_instance_for_injection (FridaDarwinHelperBackend * self, void * opaque_instance, guint task, GError ** error)
 {
   FridaSpawnInstance * instance = opaque_instance;
-  FridaHelperContext * ctx = self->context;
+  FridaDispatchContext * ctx = self->dispatch_context;
   const gchar * failed_operation;
   kern_return_t kr;
   mach_port_t self_task, child_thread;
@@ -2022,10 +2027,16 @@ _frida_darwin_helper_backend_prepare_spawn_instance_for_injection (FridaDarwinHe
     }
   }
 
-  modern_entry_address = gum_darwin_module_resolve_symbol_address (dyld, "__ZN5dyld44APIs19_libdyld_initializeEPKNS_16LibSystemHelpersE");
+  modern_entry_address = gum_darwin_module_resolve_symbol_address (dyld, "__ZN5dyld44APIs19_libdyld_initializeEv");
+  if (modern_entry_address == 0)
+    modern_entry_address = gum_darwin_module_resolve_symbol_address (dyld, "__ZN5dyld44APIs19_libdyld_initializeEPKNS_16LibSystemHelpersE");
   instance->dyld_flavor = (modern_entry_address != 0) ? FRIDA_DYLD_V4_PLUS : FRIDA_DYLD_V3_MINUS;
   if (instance->dyld_flavor == FRIDA_DYLD_V4_PLUS)
   {
+    instance->notify_objc_init = gum_darwin_module_resolve_symbol_address (dyld, "__ZN5dyld412RuntimeState14notifyObjCInitEPKNS_6LoaderE");
+    if (instance->notify_objc_init != 0)
+      modern_entry_address = instance->notify_objc_init;
+
     instance->modern_entry_address = modern_entry_address;
     legacy_entry_address = 0;
 
@@ -2104,7 +2115,17 @@ _frida_darwin_helper_backend_prepare_spawn_instance_for_injection (FridaDarwinHe
   if (instance->dyld_flavor == FRIDA_DYLD_V4_PLUS)
   {
     GumAddress restart_with_dyld_in_cache = gum_darwin_module_resolve_symbol_address (dyld,
+        "__ZN5dyld422restartWithDyldInCacheEPKNS_10KernelArgsEPKN6mach_o6HeaderEPK15DyldSharedCachePv");
+    if (restart_with_dyld_in_cache == 0)
+    {
+      restart_with_dyld_in_cache = gum_darwin_module_resolve_symbol_address (dyld,
+          "__ZN5dyld422restartWithDyldInCacheEPKNS_10KernelArgsEPKN5dyld39MachOFileEPK15DyldSharedCachePv");
+    }
+    if (restart_with_dyld_in_cache == 0)
+    {
+      restart_with_dyld_in_cache = gum_darwin_module_resolve_symbol_address (dyld,
         "__ZN5dyld422restartWithDyldInCacheEPKNS_10KernelArgsEPKN5dyld39MachOFileEPv");
+    }
     if (restart_with_dyld_in_cache != 0)
       frida_spawn_instance_set_nth_breakpoint (instance, i++, restart_with_dyld_in_cache, FRIDA_BREAKPOINT_REPEAT_NEVER);
   }
@@ -2120,11 +2141,7 @@ _frida_darwin_helper_backend_prepare_spawn_instance_for_injection (FridaDarwinHe
 
   previous_ports = &instance->previous_ports;
   kr = thread_swap_exception_ports (child_thread,
-#if __has_feature (ptrauth_calls)
-      EXC_MASK_BAD_ACCESS | EXC_MASK_BREAKPOINT,
-#else
-      EXC_MASK_BREAKPOINT,
-#endif
+      EXC_MASK_ALL,
       instance->server_port,
       EXCEPTION_DEFAULT,
       state_flavor,
@@ -2138,6 +2155,7 @@ _frida_darwin_helper_backend_prepare_spawn_instance_for_injection (FridaDarwinHe
   source = dispatch_source_create (DISPATCH_SOURCE_TYPE_MACH_RECV, instance->server_port, 0, ctx->dispatch_queue);
   instance->server_recv_source = source;
   dispatch_set_context (source, instance);
+  dispatch_source_set_cancel_handler_f (source, frida_spawn_instance_on_server_cancel);
   dispatch_source_set_event_handler_f (source, frida_spawn_instance_on_server_recv);
   dispatch_resume (source);
 
@@ -2189,9 +2207,9 @@ _frida_darwin_helper_backend_resume_spawn_instance (FridaDarwinHelperBackend * s
 }
 
 void
-_frida_darwin_helper_backend_free_spawn_instance (FridaDarwinHelperBackend * self, void * instance)
+_frida_darwin_helper_backend_close_spawn_instance (FridaDarwinHelperBackend * self, void * instance)
 {
-  frida_spawn_instance_free (instance);
+  frida_spawn_instance_close (instance);
 }
 
 guint
@@ -2478,7 +2496,7 @@ mach_failure:
   }
 failure:
   {
-    frida_inject_instance_free (instance);
+    frida_inject_instance_close (instance);
     goto beach;
   }
 beach:
@@ -2584,25 +2602,31 @@ static gboolean
 frida_inject_instance_start_thread (FridaInjectInstance * self, GError ** error)
 {
   gboolean success = FALSE;
+  thread_state_t thread_state;
+  mach_msg_type_number_t thread_state_count;
   kern_return_t kr;
   const gchar * failed_operation;
-  FridaHelperContext * ctx = self->backend->context;
+  FridaDispatchContext * ctx = self->backend->dispatch_context;
   dispatch_source_t source;
 
-  kr = thread_create (self->task, &self->thread);
-  CHECK_MACH_RESULT (kr, ==, KERN_SUCCESS, "thread_create");
+  thread_state = g_alloca (self->thread_state_count * sizeof (natural_t));
+  thread_state_count = self->thread_state_count;
 
-  kr = frida_set_thread_state (self->thread, self->thread_state_flavor, self->thread_state_data, self->thread_state_count);
-  CHECK_MACH_RESULT (kr, ==, KERN_SUCCESS, "set_thread_state");
+  if (!frida_convert_thread_state_for_task (self->task, self->thread_state_flavor, self->thread_state_data, self->thread_state_count,
+        thread_state, &thread_state_count, error))
+  {
+    return FALSE;
+  }
+
+  kr = thread_create_running (self->task, self->thread_state_flavor, thread_state, thread_state_count, &self->thread);
+  CHECK_MACH_RESULT (kr, ==, KERN_SUCCESS, "thread_create");
 
   source = dispatch_source_create (DISPATCH_SOURCE_TYPE_MACH_SEND, self->thread, DISPATCH_MACH_SEND_DEAD, ctx->dispatch_queue);
   self->thread_monitor_source = source;
   dispatch_set_context (source, self);
+  dispatch_source_set_cancel_handler_f (source, frida_inject_instance_on_thread_monitor_cancel);
   dispatch_source_set_event_handler_f (source, frida_inject_instance_on_mach_thread_dead);
   dispatch_resume (source);
-
-  kr = thread_resume (self->thread);
-  CHECK_MACH_RESULT (kr, ==, KERN_SUCCESS, "thread_resume");
 
   success = TRUE;
 
@@ -2621,6 +2645,15 @@ beach:
   {
     return success;
   }
+}
+
+static void
+frida_inject_instance_on_thread_monitor_cancel (void * context)
+{
+  FridaInjectInstance * self = context;
+
+  dispatch_release (g_steal_pointer (&self->thread_monitor_source));
+  frida_inject_instance_close (self);
 }
 
 static void
@@ -2679,7 +2712,7 @@ _frida_darwin_helper_backend_join_inject_instance_posix_thread (FridaDarwinHelpe
 static void
 frida_inject_instance_join_posix_thread (FridaInjectInstance * self, mach_port_t posix_thread)
 {
-  FridaHelperContext * ctx = self->backend->context;
+  FridaDispatchContext * ctx = self->backend->dispatch_context;
   mach_port_t self_task;
   dispatch_source_t source;
 
@@ -2692,6 +2725,7 @@ frida_inject_instance_join_posix_thread (FridaInjectInstance * self, mach_port_t
   source = dispatch_source_create (DISPATCH_SOURCE_TYPE_MACH_SEND, self->thread, DISPATCH_MACH_SEND_DEAD, ctx->dispatch_queue);
   self->thread_monitor_source = source;
   dispatch_set_context (source, self);
+  dispatch_source_set_cancel_handler_f (source, frida_inject_instance_on_thread_monitor_cancel);
   dispatch_source_set_event_handler_f (source, frida_inject_instance_on_posix_thread_dead);
   dispatch_resume (source);
 }
@@ -2711,9 +2745,9 @@ _frida_darwin_helper_backend_get_pid_of_inject_instance (FridaDarwinHelperBacken
 }
 
 void
-_frida_darwin_helper_backend_free_inject_instance (FridaDarwinHelperBackend * self, void * instance)
+_frida_darwin_helper_backend_close_inject_instance (FridaDarwinHelperBackend * self, void * instance)
 {
-  frida_inject_instance_free (instance);
+  frida_inject_instance_close (instance);
 }
 
 static FridaSpawnInstance *
@@ -2723,7 +2757,7 @@ frida_spawn_instance_new (FridaDarwinHelperBackend * backend)
   guint i;
 
   instance = g_slice_new0 (FridaSpawnInstance);
-  instance->backend = backend;
+  instance->backend = g_object_ref (backend);
   instance->thread = MACH_PORT_NULL;
 
   instance->server_port = MACH_PORT_NULL;
@@ -2746,15 +2780,23 @@ frida_spawn_instance_new (FridaDarwinHelperBackend * backend)
     instance->page_pool[i].scratch_page = 0;
   }
 
+  _frida_darwin_helper_backend_on_instance_created (backend, instance);
+
   return instance;
 }
 
 static void
-frida_spawn_instance_free (FridaSpawnInstance * instance)
+frida_spawn_instance_close (FridaSpawnInstance * instance)
 {
   task_t self_task;
   FridaExceptionPortSet * previous_ports;
   mach_msg_type_number_t port_index;
+
+  if (instance->server_recv_source != NULL)
+  {
+    dispatch_source_cancel (instance->server_recv_source);
+    return;
+  }
 
   self_task = mach_task_self ();
 
@@ -2768,8 +2810,6 @@ frida_spawn_instance_free (FridaSpawnInstance * instance)
   {
     mach_port_deallocate (self_task, previous_ports->ports[port_index]);
   }
-  if (instance->server_recv_source != NULL)
-    dispatch_release (instance->server_recv_source);
   if (instance->server_port != MACH_PORT_NULL)
   {
     mach_port_mod_refs (self_task, instance->server_port, MACH_PORT_RIGHT_SEND, -1);
@@ -2784,6 +2824,9 @@ frida_spawn_instance_free (FridaSpawnInstance * instance)
 
   if (instance->dyld != NULL)
     g_object_unref (instance->dyld);
+
+  _frida_darwin_helper_backend_on_instance_destroyed (instance->backend, instance);
+  g_object_unref (instance->backend);
 
   g_slice_free (FridaSpawnInstance, instance);
 }
@@ -2819,6 +2862,15 @@ frida_spawn_instance_resume (FridaSpawnInstance * self)
   }
 
   frida_spawn_instance_send_breakpoint_response (self);
+}
+
+static void
+frida_spawn_instance_on_server_cancel (void * context)
+{
+  FridaSpawnInstance * self = context;
+
+  dispatch_release (g_steal_pointer (&self->server_recv_source));
+  frida_spawn_instance_close (self);
 }
 
 static void
@@ -2880,6 +2932,9 @@ frida_spawn_instance_on_server_recv (void * context)
   else
     pc = state.ts_32.__pc;
 #endif
+
+  if (request->exception != EXC_BREAKPOINT)
+    goto unexpected_exception;
 
   if (self->single_stepping >= 0)
   {
@@ -3052,9 +3107,15 @@ frida_spawn_instance_handle_breakpoint (FridaSpawnInstance * self, FridaBreakpoi
     if (self->dyld_flavor == FRIDA_DYLD_V4_PLUS)
     {
       if (pc == self->modern_entry_address)
-        self->breakpoint_phase = FRIDA_BREAKPOINT_SET_LIBDYLD_INITIALIZE_CALLER_BREAKPOINT;
+      {
+        self->breakpoint_phase = (pc == self->notify_objc_init)
+            ? FRIDA_BREAKPOINT_LIBSYSTEM_INITIALIZED
+            : FRIDA_BREAKPOINT_SET_LIBDYLD_INITIALIZE_CALLER_BREAKPOINT;
+      }
       else
+      {
         return frida_spawn_instance_handle_dyld_restart (self);
+      }
     }
     else
     {
@@ -3320,6 +3381,7 @@ frida_spawn_instance_handle_dyld_restart (FridaSpawnInstance * self)
   GumAddress * info_ptr;
   struct dyld_all_image_infos * info = NULL;
   GumDarwinModule * dyld = NULL;
+  gssize delta;
 
   info_ptr = (GumAddress *) gum_darwin_read (self->task, self->info_ptr_address, sizeof (GumAddress), NULL);
   if (info_ptr == NULL)
@@ -3334,7 +3396,11 @@ frida_spawn_instance_handle_dyld_restart (FridaSpawnInstance * self)
   if (dyld == NULL)
     goto beach;
 
-  self->modern_entry_address = GUM_ADDRESS (info->dyldImageLoadAddress) + (self->modern_entry_address - self->dyld->base_address);
+  delta = (gssize) info->dyldImageLoadAddress - (gssize) self->dyld->base_address;
+
+  self->modern_entry_address += delta;
+  if (self->notify_objc_init != 0)
+    self->notify_objc_init += delta;
 
   g_object_unref (self->dyld);
   self->dyld = g_steal_pointer (&dyld);
@@ -3592,22 +3658,25 @@ frida_spawn_instance_destroy_dyld_data (FridaSpawnInstance * self)
 #if defined (HAVE_IOS) || defined (HAVE_TVOS)
 
 static gboolean
-frida_pick_ios_tvos_bootstrapper (const GumModuleDetails * details, gpointer user_data)
+frida_pick_ios_tvos_bootstrapper (GumModule * module, gpointer user_data)
 {
   FridaSpawnInstanceDyldData * data = user_data;
+  const gchar * path;
   const gchar * candidates[] = {
     "/usr/lib/substitute-inserter.dylib",
     "/usr/lib/pspawn_payload-stg2.dylib"
   };
   guint i;
 
+  path = gum_module_get_path (module);
+
   for (i = 0; i != G_N_ELEMENTS (candidates); i++)
   {
     const gchar * bootstrapper = candidates[i];
 
-    if (strcmp (details->path, bootstrapper) == 0)
+    if (strcmp (path, bootstrapper) == 0)
     {
-      strcpy (data->bootstrapper, details->path);
+      strcpy (data->bootstrapper, path);
       return FALSE;
     }
   }
@@ -3770,15 +3839,15 @@ frida_spawn_instance_call_dlopen (FridaSpawnInstance * self, GumDarwinUnifiedThr
 }
 
 static gboolean
-frida_find_cf_initialize (const GumModuleDetails * details, gpointer user_data)
+frida_find_cf_initialize (GumModule * module, gpointer user_data)
 {
   FridaSpawnInstance * self = user_data;
   GumDarwinModule * core_foundation;
 
-  if (strcmp (details->path, CORE_FOUNDATION) != 0)
+  if (strcmp (gum_module_get_path (module), CORE_FOUNDATION) != 0)
     return TRUE;
 
-  core_foundation = gum_darwin_module_new_from_memory (CORE_FOUNDATION, self->task, details->range->base_address,
+  core_foundation = gum_darwin_module_new_from_memory (CORE_FOUNDATION, self->task, gum_module_get_range (module)->base_address,
       GUM_DARWIN_MODULE_FLAGS_NONE, NULL);
 
   self->cf_initialize_address = gum_darwin_module_resolve_symbol_address (core_foundation, "___CFInitialize");
@@ -4057,6 +4126,8 @@ frida_inject_instance_new (FridaDarwinHelperBackend * backend, guint id, guint p
 
   instance->backend = g_object_ref (backend);
 
+  _frida_darwin_helper_backend_on_instance_created (backend, instance);
+
   return instance;
 }
 
@@ -4086,20 +4157,26 @@ frida_inject_instance_clone (const FridaInjectInstance * instance, guint id)
 
   g_object_ref (clone->backend);
 
+  _frida_darwin_helper_backend_on_instance_created (clone->backend, clone);
+
   return clone;
 }
 
 static void
-frida_inject_instance_free (FridaInjectInstance * instance)
+frida_inject_instance_close (FridaInjectInstance * instance)
 {
   FridaAgentContext * agent_context = instance->agent_context;
   task_t self_task;
   gboolean can_deallocate_payload;
 
+  if (instance->thread_monitor_source != NULL)
+  {
+    dispatch_source_cancel (instance->thread_monitor_source);
+    return;
+  }
+
   self_task = mach_task_self ();
 
-  if (instance->thread_monitor_source != NULL)
-    dispatch_release (instance->thread_monitor_source);
   if (instance->thread != MACH_PORT_NULL)
     mach_port_deallocate (self_task, instance->thread);
 
@@ -4126,6 +4203,7 @@ frida_inject_instance_free (FridaInjectInstance * instance)
   if (instance->task != MACH_PORT_NULL)
     mach_port_deallocate (self_task, instance->task);
 
+  _frida_darwin_helper_backend_on_instance_destroyed (instance->backend, instance);
   g_object_unref (instance->backend);
 
   g_slice_free (FridaInjectInstance, instance);
@@ -4231,9 +4309,10 @@ frida_agent_context_init (FridaAgentContext * self, const FridaAgentDetails * de
 static gboolean
 frida_agent_context_init_functions (FridaAgentContext * self, GumDarwinModuleResolver * resolver, GumDarwinMapper * mapper, GError ** error)
 {
+  gboolean success = FALSE;
   GumDarwinModule * module;
 
-  module = gum_darwin_module_resolver_find_module (resolver, "/usr/lib/system/libsystem_kernel.dylib");
+  module = gum_darwin_module_resolver_find_module_by_name (resolver, "/usr/lib/system/libsystem_kernel.dylib");
   if (module == NULL)
     goto no_libc;
   FRIDA_AGENT_CONTEXT_RESOLVE (mach_task_self);
@@ -4242,8 +4321,10 @@ frida_agent_context_init_functions (FridaAgentContext * self, GumDarwinModuleRes
   FRIDA_AGENT_CONTEXT_RESOLVE (mach_msg_receive);
   FRIDA_AGENT_CONTEXT_RESOLVE (mach_port_destroy);
   FRIDA_AGENT_CONTEXT_RESOLVE (thread_terminate);
+  g_object_unref (module);
+  module = NULL;
 
-  module = gum_darwin_module_resolver_find_module (resolver, "/usr/lib/system/libsystem_pthread.dylib");
+  module = gum_darwin_module_resolver_find_module_by_name (resolver, "/usr/lib/system/libsystem_pthread.dylib");
   if (module == NULL)
     goto no_libc;
   FRIDA_AGENT_CONTEXT_TRY_RESOLVE (pthread_create_from_mach_thread);
@@ -4254,18 +4335,23 @@ frida_agent_context_init_functions (FridaAgentContext * self, GumDarwinModuleRes
   FRIDA_AGENT_CONTEXT_TRY_RESOLVE (pthread_threadid_np);
   FRIDA_AGENT_CONTEXT_RESOLVE (pthread_detach);
   FRIDA_AGENT_CONTEXT_RESOLVE (pthread_self);
+  g_object_unref (module);
+  module = NULL;
 
   if (mapper == NULL)
   {
-    module = gum_darwin_module_resolver_find_module (resolver, "/usr/lib/system/libdyld.dylib");
+    module = gum_darwin_module_resolver_find_module_by_name (resolver, "/usr/lib/system/libdyld.dylib");
     if (module == NULL)
       goto no_libc;
     FRIDA_AGENT_CONTEXT_RESOLVE (dlopen);
     FRIDA_AGENT_CONTEXT_RESOLVE (dlsym);
     FRIDA_AGENT_CONTEXT_RESOLVE (dlclose);
+    g_object_unref (module);
+    module = NULL;
   }
 
-  return TRUE;
+  success = TRUE;
+  goto beach;
 
 no_libc:
   {
@@ -4273,7 +4359,7 @@ no_libc:
         FRIDA_ERROR,
         FRIDA_ERROR_NOT_SUPPORTED,
         "Unable to attach to processes without Apple's libc (for now)");
-    goto failure;
+    goto beach;
   }
 missing_symbol:
   {
@@ -4281,11 +4367,13 @@ missing_symbol:
         FRIDA_ERROR,
         FRIDA_ERROR_NOT_SUPPORTED,
         "Unexpected error while resolving functions");
-    goto failure;
+    goto beach;
   }
-failure:
+beach:
   {
-    return FALSE;
+    g_clear_object (&module);
+
+    return success;
   }
 }
 
@@ -5041,6 +5129,52 @@ frida_agent_context_emit_arm64_pthread_stub_body (FridaAgentContext * self, Frid
 }
 
 #endif
+
+static gboolean
+frida_convert_thread_state_for_task (mach_port_t task, thread_state_flavor_t flavor, gconstpointer in_state,
+    mach_msg_type_number_t in_state_count, gpointer out_state, mach_msg_type_number_t * out_state_count,
+    GError ** error)
+{
+  gboolean success = FALSE;
+  kern_return_t kr;
+  const gchar * failed_operation;
+  thread_act_array_t threads = NULL;
+  mach_msg_type_number_t thread_count = 0;
+
+  kr = task_threads (task, &threads, &thread_count);
+  CHECK_MACH_RESULT (kr, ==, KERN_SUCCESS, "task_threads");
+
+  kr = frida_convert_thread_state (threads[0], FRIDA_CONVERT_THREAD_STATE_OUT, flavor, in_state, in_state_count,
+      out_state, out_state_count);
+  CHECK_MACH_RESULT (kr, ==, KERN_SUCCESS, "thread_convert_thread_state");
+
+  success = TRUE;
+
+  goto beach;
+
+mach_failure:
+  {
+    g_set_error (error,
+        FRIDA_ERROR,
+        FRIDA_ERROR_NOT_SUPPORTED,
+        "Unexpected error while converting thread state for task (%s returned '%s')",
+        failed_operation, mach_error_string (kr));
+    goto beach;
+  }
+beach:
+  {
+    mach_msg_type_number_t i;
+
+    if (threads != NULL)
+    {
+      for (i = 0; i != thread_count; i++)
+        mach_port_deallocate (mach_task_self (), threads[i]);
+      vm_deallocate (mach_task_self (), (vm_address_t) threads, thread_count * sizeof (thread_t));
+    }
+
+    return success;
+  }
+}
 
 static mach_port_t
 frida_obtain_thread_port_for_thread_id (mach_port_t task, uint64_t thread_id)

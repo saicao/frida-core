@@ -1,5 +1,5 @@
 namespace Frida {
-	public class PortalService : Object {
+	public sealed class PortalService : Object {
 		public signal void node_connected (uint connection_id, SocketAddress remote_address);
 		public signal void node_joined (uint connection_id, Application application);
 		public signal void node_left (uint connection_id, Application application);
@@ -61,8 +61,7 @@ namespace Frida {
 		}
 
 		construct {
-			_device = new Device (null, "portal", "Portal", HostSessionProviderKind.LOCAL,
-				new PortalHostSessionProvider (this));
+			_device = new Device (null, new PortalHostSessionProvider (this));
 
 			cluster_service = new WebService (cluster_params, CLUSTER);
 			cluster_service.incoming.connect (on_incoming_cluster_connection);
@@ -930,9 +929,8 @@ namespace Frida {
 			}
 
 			public string name {
-				get { return _name; }
+				get { return "Portal"; }
 			}
-			private string _name = "Portal";
 
 			public Variant? icon {
 				get { return _icon; }
@@ -988,7 +986,7 @@ namespace Frida {
 				if (host_session != channel)
 					throw new Error.INVALID_ARGUMENT ("Invalid host session");
 
-				AgentSessionEntry entry = parent.sessions[id];
+				AgentSessionEntry? entry = parent.sessions[id];
 				if (entry == null)
 					throw new Error.INVALID_ARGUMENT ("Invalid session ID");
 
@@ -1000,6 +998,33 @@ namespace Frida {
 				}
 
 				return entry.session;
+			}
+
+			public void unlink_agent_session (HostSession host_session, AgentSessionId id) {
+				if (host_session != channel)
+					return;
+
+				AgentSessionEntry? entry = parent.sessions[id];
+				if (entry == null)
+					return;
+
+				entry.clear_node_registrations ();
+			}
+
+			public async IOStream link_channel (HostSession host_session, ChannelId id, Cancellable? cancellable)
+					throws Error, IOError {
+				throw new Error.NOT_SUPPORTED ("Channels are not supported by this backend");
+			}
+
+			public void unlink_channel (HostSession host_session, ChannelId id) {
+			}
+
+			public async ServiceSession link_service_session (HostSession host_session, ServiceSessionId id,
+					Cancellable? cancellable) throws Error, IOError {
+				throw new Error.NOT_SUPPORTED ("Services are not supported by this backend");
+			}
+
+			public void unlink_service_session (HostSession host_session, ServiceSessionId id) {
 			}
 
 			private void on_agent_session_detached (AgentSessionId id, SessionDetachReason reason, CrashInfo crash) {
@@ -1280,6 +1305,14 @@ namespace Frida {
 					Cancellable? cancellable) throws Error, IOError {
 				throw new Error.NOT_SUPPORTED ("Not supported");
 			}
+
+			public async ChannelId open_channel (string address, Cancellable? cancellable) throws Error, IOError {
+				throw new Error.NOT_SUPPORTED ("Channels are not supported by this backend");
+			}
+
+			public async ServiceSessionId open_service (string address, Cancellable? cancellable) throws Error, IOError {
+				throw new Error.NOT_SUPPORTED ("Services are not supported by this backend");
+			}
 		}
 
 		private class BusService : Object, BusSession {
@@ -1518,8 +1551,16 @@ namespace Frida {
 			}
 
 			private void unregister_all () {
+				clear_controller_registrations ();
+				clear_node_registrations ();
+			}
+
+			private void clear_controller_registrations () {
 				if (controller != null)
 					unregister_all_in (controller_registrations, controller.connection);
+			}
+
+			public void clear_node_registrations () {
 				if (node != null)
 					unregister_all_in (node_registrations, node.connection);
 			}

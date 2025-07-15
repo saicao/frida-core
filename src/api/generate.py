@@ -1,33 +1,71 @@
-#!/usr/bin/env python3
-
+from __future__ import annotations
 import argparse
-import os
+from dataclasses import dataclass
+from io import StringIO
 from pathlib import Path
 import re
-import sys
+from typing import List, Set
+import xml.etree.ElementTree as ET
 
+CORE_NAMESPACE = "http://www.gtk.org/introspection/core/1.0"
+C_NAMESPACE = "http://www.gtk.org/introspection/c/1.0"
+GLIB_NAMESPACE = "http://www.gtk.org/introspection/glib/1.0"
+GIR_NAMESPACES = {
+    "": CORE_NAMESPACE,
+    "c": C_NAMESPACE,
+    "glib": GLIB_NAMESPACE,
+}
+
+CORE_TAG_IMPLEMENTS = f"{{{CORE_NAMESPACE}}}implements"
+CORE_TAG_FIELD = f"{{{CORE_NAMESPACE}}}field"
+CORE_TAG_CONSTRUCTOR = f"{{{CORE_NAMESPACE}}}constructor"
+CORE_TAG_METHOD = f"{{{CORE_NAMESPACE}}}method"
+
+OBJECT_TYPE_PATTERN = re.compile(r"\bpublic\s+(sealed )?(class|interface)\s+(\w+)\b")
 
 def main():
     parser = argparse.ArgumentParser(description="Generate refined Frida API definitions")
-    parser.add_argument('--output', dest='output_type', choices=['bundle', 'header', 'vapi'], default='bundle')
+    parser.add_argument('--output', dest='output_type', choices=['bundle', 'header', 'gir', 'vapi', 'vapi-stamp'], default='bundle')
+    parser.add_argument('frida_version', metavar='frida-version', type=str)
+    parser.add_argument('frida_major_version', metavar='frida-major-version', type=str)
+    parser.add_argument('frida_minor_version', metavar='frida-minor-version', type=str)
+    parser.add_argument('frida_micro_version', metavar='frida-micro-version', type=str)
+    parser.add_argument('frida_nano_version', metavar='frida-nano-version', type=str)
     parser.add_argument('api_version', metavar='api-version', type=str)
-    parser.add_argument('core_vapi', metavar='/path/to/frida-core.vapi', type=argparse.FileType('r', encoding='utf-8'))
     parser.add_argument('core_header', metavar='/path/to/frida-core.h', type=argparse.FileType('r', encoding='utf-8'))
-    parser.add_argument('base_vapi', metavar='/path/to/frida-base.vapi', type=argparse.FileType('r', encoding='utf-8'))
+    parser.add_argument('core_gir', metavar='/path/to/Frida-x.y.gir', type=argparse.FileType('r', encoding='utf-8'))
+    parser.add_argument('core_vapi', metavar='/path/to/frida-core.vapi', type=argparse.FileType('r', encoding='utf-8'))
     parser.add_argument('base_header', metavar='/path/to/frida-base.h', type=argparse.FileType('r', encoding='utf-8'))
+    parser.add_argument('base_gir', metavar='/path/to/FridaBase-x.y.gir', type=argparse.FileType('r', encoding='utf-8'))
+    parser.add_argument('base_vapi', metavar='/path/to/frida-base.vapi', type=argparse.FileType('r', encoding='utf-8'))
     parser.add_argument('output_dir', metavar='/output/dir')
 
     args = parser.parse_args()
 
+    output_type = args.output_type
+    frida_version = args.frida_version
+    frida_version_components = (
+        args.frida_major_version,
+        args.frida_minor_version,
+        args.frida_micro_version,
+        args.frida_nano_version,
+    )
     api_version = args.api_version
-    core_vapi = args.core_vapi.read()
     core_header = args.core_header.read()
-    base_vapi = args.base_vapi.read()
+    core_gir = args.core_gir.read()
+    core_vapi = args.core_vapi.read()
     base_header = args.base_header.read()
+    base_gir = args.base_gir.read()
+    base_vapi = args.base_vapi.read()
     output_dir = Path(args.output_dir)
+
+    if output_type == 'vapi-stamp':
+        (output_dir / f"frida-core-{api_version}.vapi.stamp").write_bytes(b"")
+        return
 
     toplevel_names = [
         "frida.vala",
+        "package-manager.vala",
         "control-service.vala",
         "portal-service.vala",
         "file-monitor.vala",
@@ -36,34 +74,58 @@ def main():
     toplevel_sources = []
     src_dir = Path(__file__).parent.parent.resolve()
     for name in toplevel_names:
-        with open(src_dir / name, 'r', encoding='utf-8') as f:
-            toplevel_sources.append(f.read())
+        toplevel_sources.append((src_dir / name).read_text(encoding='utf-8'))
     toplevel_code = "\n".join(toplevel_sources)
 
     enable_header = False
+    enable_gir = False
     enable_vapi = False
-    output_type = args.output_type
     if output_type == 'bundle':
         enable_header = True
+        enable_gir = True
         enable_vapi = True
     elif output_type == 'header':
         enable_header = True
+    elif output_type == 'gir':
+        enable_gir = True
     elif output_type == 'vapi':
         enable_vapi = True
 
-    api = parse_api(api_version, toplevel_code, core_vapi, core_header, base_vapi, base_header)
+    api = parse_api(frida_version, frida_version_components, api_version, toplevel_code, core_header, core_vapi, base_header, base_vapi)
 
     if enable_header:
         emit_header(api, output_dir)
+
+    if enable_gir:
+        emit_gir(api, core_gir, base_gir, output_dir)
 
     if enable_vapi:
         emit_vapi(api, output_dir)
 
 def emit_header(api, output_dir):
-    with open(output_dir / 'frida-core.h', 'w', encoding='utf-8') as output_header_file:
+    with OutputFile(output_dir / 'frida-core.h') as output_header_file:
         output_header_file.write("#ifndef __FRIDA_CORE_H__\n#define __FRIDA_CORE_H__\n\n")
 
-        output_header_file.write("#include <glib.h>\n#include <glib-object.h>\n#include <gio/gio.h>\n#include <json-glib/json-glib.h>\n")
+        output_header_file.write("#include <glib.h>\n#include <glib-object.h>\n#include <gio/gio.h>\n#include <json-glib/json-glib.h>\n\n")
+
+        output_header_file.write(f"#define FRIDA_VERSION \"{api.frida_version}\"\n\n")
+
+        for name, value in zip(['MAJOR', 'MINOR', 'MICRO', 'NANO'], api.frida_version_components):
+            output_header_file.write(f"#define FRIDA_{name}_VERSION {value}\n")
+
+        output_header_file.write("""
+#define FRIDA_CHECK_VERSION(maj, min, mic) \\
+    (FRIDA_CURRENT_VERSION >= FRIDA_VERSION_ENCODE ((maj), (min), (mic)))
+
+#define FRIDA_CURRENT_VERSION \\
+    FRIDA_VERSION_ENCODE (    \\
+        FRIDA_MAJOR_VERSION,  \\
+        FRIDA_MINOR_VERSION,  \\
+        FRIDA_MICRO_VERSION)
+
+#define FRIDA_VERSION_ENCODE(maj, min, mic) \\
+    (((maj) * 1000000U) + ((min) * 1000U) + (mic))
+""")
 
         output_header_file.write("\nG_BEGIN_DECLS\n")
 
@@ -71,7 +133,6 @@ def emit_header(api, output_dir):
             output_header_file.write("\ntypedef struct _%s %s;" % (object_type.c_name, object_type.c_name))
             if object_type.c_iface_definition is not None:
                 output_header_file.write("\ntypedef struct _%sIface %sIface;" % (object_type.c_name, object_type.c_name))
-        output_header_file.write("\ntypedef struct _FridaHostSession FridaHostSession;")
 
         for enum in api.enum_types:
             output_header_file.write("\n\n" + enum.c_definition)
@@ -142,8 +203,64 @@ def emit_header(api, output_dir):
 
         output_header_file.write("\n\n#endif\n")
 
+def emit_gir(api: ApiSpec, core_gir: str, base_gir: str, output_dir: Path) -> str:
+    ET.register_namespace("", CORE_NAMESPACE)
+    ET.register_namespace("c", C_NAMESPACE)
+    ET.register_namespace("glib", GLIB_NAMESPACE)
+
+    core_tree = ET.ElementTree(ET.fromstring(core_gir))
+    base_tree = ET.ElementTree(ET.fromstring(base_gir))
+
+    core_root = core_tree.getroot()
+    base_root = base_tree.getroot()
+
+    merged_root = ET.Element(core_root.tag, core_root.attrib)
+
+    for elem in core_root.findall("include", GIR_NAMESPACES):
+        name = elem.get("name")
+        if name in {"GLib", "GObject", "Gio"}:
+            merged_root.append(elem)
+
+    for tag in ["package", "c:include"]:
+        for elem in core_root.findall(tag, GIR_NAMESPACES):
+            merged_root.append(elem)
+
+    core_namespace = core_root.find("namespace", GIR_NAMESPACES)
+    merged_namespace = ET.SubElement(merged_root, core_namespace.tag, core_namespace.attrib)
+
+    object_type_names = {obj.name for obj in api.object_types}
+    enum_type_names = {enum.name for enum in api.enum_types}
+    error_type_names = {error.name for error in api.error_types}
+
+    def merge_and_transform_elements(tag_name: str, spec_set: Set[str]):
+        core_elements = filter_elements(core_root.findall(f".//{tag_name}", GIR_NAMESPACES), spec_set)
+        base_elements = filter_elements(base_root.findall(f".//{tag_name}", GIR_NAMESPACES), spec_set)
+        for elem in core_elements + base_elements:
+            if tag_name == "class":
+                for child in list(elem):
+                    if (child.tag == CORE_TAG_IMPLEMENTS and child.get("name") == "FridaBase.AgentMessageSink") \
+                            or child.tag == CORE_TAG_FIELD \
+                            or child.get("name").startswith("_"):
+                        elem.remove(child)
+            merged_namespace.append(elem)
+
+    merge_and_transform_elements("class", object_type_names)
+    merge_and_transform_elements("interface", object_type_names)
+    merge_and_transform_elements("enumeration", enum_type_names | error_type_names)
+
+    ET.indent(merged_root, space="  ")
+    result = ET.tostring(merged_root,
+                         encoding="unicode",
+                         xml_declaration=True)
+    result = result.replace("FridaBase.", "Frida.")
+    with OutputFile(output_dir / f"Frida-{api.version}.gir") as output_gir:
+        output_gir.write(result)
+
+def filter_elements(elements: List[ET.Element], spec_set: Set[str]):
+    return [elem for elem in elements if elem.get("name") in spec_set]
+
 def emit_vapi(api, output_dir):
-    with open(output_dir / "frida-core-{0}.vapi".format(api.version), "w", encoding='utf-8') as output_vapi_file:
+    with OutputFile(output_dir / f"frida-core-{api.version}.vapi") as output_vapi_file:
         output_vapi_file.write("[CCode (cheader_filename = \"frida-core.h\", cprefix = \"Frida\", lower_case_cprefix = \"frida_\")]")
         output_vapi_file.write("\nnamespace Frida {")
         output_vapi_file.write("\n\tpublic static void init ();")
@@ -181,12 +298,12 @@ def emit_vapi(api, output_dir):
 
         output_vapi_file.write("\n}\n")
 
-    with open(output_dir / "frida-core-{0}.deps".format(api.version), "w", encoding='utf-8') as output_deps_file:
+    with OutputFile(output_dir / f"frida-core-{api.version}.deps") as output_deps_file:
         output_deps_file.write("glib-2.0\n")
         output_deps_file.write("gobject-2.0\n")
         output_deps_file.write("gio-2.0\n")
 
-def parse_api(api_version, toplevel_code, core_vapi, core_header, base_vapi, base_header):
+def parse_api(frida_version, frida_version_components, api_version, toplevel_code, core_header, core_vapi, base_header, base_vapi):
     all_headers = core_header + "\n" + base_header
 
     all_enum_names = [m.group(1) for m in re.finditer(r"^\t+public\s+enum\s+(\w+)\s+", toplevel_code + "\n" + base_vapi, re.MULTILINE)]
@@ -209,12 +326,18 @@ def parse_api(api_version, toplevel_code, core_vapi, core_header, base_vapi, bas
         "StaticAuthenticationService": "AuthenticationService",
     }
     internal_type_prefixes = [
+        "AgentMessageKind",
         "Fruity",
         "HostSession",
         "MessageType",
+        "PeerSetup",
+        "PortConflictBehavior",
         "ResultCode",
         "SpawnStartState",
         "State",
+        "StringTerminator",
+        "UnloadPolicy",
+        "WebService",
         "Winjector"
     ]
     seen_enum_names = set()
@@ -279,8 +402,7 @@ def parse_api(api_version, toplevel_code, core_vapi, core_header, base_vapi, bas
             method_cname_lc = object_type.c_name_lc + '_' + method_name
             if method_cname_lc not in seen_cfunctions:
                 seen_cfunctions.add(method_cname_lc)
-                if method_name not in ('construct', 'construct_with_host_session', 'get_main_context', 'get_provider', 'get_session') \
-                        and not (object_type.name in ("Session", "Script") and method_name == 'get_id'):
+                if method_name != 'construct':
                     if (object_type.c_name + '*') in m.group(0):
                         if method_name == 'new' or method_name.startswith('new_'):
                             object_type.c_constructors.append(method_cprototype)
@@ -297,7 +419,7 @@ def parse_api(api_version, toplevel_code, core_vapi, core_header, base_vapi, bas
             if delegate_cname not in seen_cdelegates:
                 seen_cdelegates.add(delegate_cname)
                 object_type.c_delegate_typedefs.append(beautify_cprototype(d.group(0)))
-        if object_type.kind == 'interface' and object_type.name != "Injector":
+        if object_type.kind == 'interface':
             for m in re.finditer("^(struct _" + object_type.c_name + "Iface {[^}]+};)$", all_headers, re.MULTILINE):
                 object_type.c_iface_definition = beautify_cinterface(m.group(1))
 
@@ -319,8 +441,10 @@ def parse_api(api_version, toplevel_code, core_vapi, core_header, base_vapi, bas
                 if stripped_line == "}":
                     ignoring = False
             else:
-                if stripped_line.startswith("public abstract") or stripped_line.startswith("public class Promise") \
-                        or stripped_line.startswith("public interface Future"):
+                if stripped_line.startswith("public abstract") \
+                        or stripped_line.startswith("public class Promise") \
+                        or stripped_line.startswith("public interface Future") \
+                        or stripped_line.startswith("public class CF"):
                     ignoring = True
                 elif stripped_line.startswith("public enum") or stripped_line.startswith("public errordomain"):
                     name = re.match(r"^public (?:enum|errordomain) (\w+) ", stripped_line).group(1)
@@ -332,8 +456,8 @@ def parse_api(api_version, toplevel_code, core_vapi, core_header, base_vapi, bas
                         current_enum.vapi_declaration = stripped_line
                     else:
                         ignoring = True
-                elif stripped_line.startswith("public class") or stripped_line.startswith("public interface"):
-                    name = re.match(r"^public (class|interface) (\w+) ", stripped_line).group(2)
+                elif (match := OBJECT_TYPE_PATTERN.match(stripped_line)) is not None:
+                    name = match.group(3)
                     if name not in object_type_by_name:
                         ignoring = True
                     else:
@@ -352,8 +476,7 @@ def parse_api(api_version, toplevel_code, core_vapi, core_header, base_vapi, bas
                 current_object_type.vapi_signals.append(stripped_line)
             elif "{ get" in stripped_line:
                 name = re.match(r".+?(\w+)\s+{", stripped_line).group(1)
-                if name not in ('main_context', 'provider', 'session'):
-                    current_object_type.vapi_properties.append(stripped_line)
+                current_object_type.vapi_properties.append(stripped_line)
             else:
                 m = re.match(r".+?(\w+)\s+\(", stripped_line)
                 if m is not None:
@@ -373,7 +496,7 @@ def parse_api(api_version, toplevel_code, core_vapi, core_header, base_vapi, bas
         m = re.search(r"^[\w\*]+ frida_{}.+?;".format(f.name), all_headers, re.MULTILINE | re.DOTALL)
         f.c_prototype = beautify_cprototype(m.group(0))
 
-    return ApiSpec(api_version, object_types, functions, enum_types, error_types)
+    return ApiSpec(frida_version, frida_version_components, api_version, object_types, functions, enum_types, error_types)
 
 def function_is_public(name):
     return not name.startswith("_") and \
@@ -387,22 +510,25 @@ def function_is_public(name):
                 "parse_control_address",
                 "parse_cluster_address",
                 "parse_socket_address",
-                "negotiate_connection"
+                "negotiate_connection",
+                "check_kernel_version",
             ]
 
-def parse_vala_object_types(source):
-    return [ApiObjectType(m.group(2), m.group(1)) for m in re.finditer(r"^\t+public\s+(class|interface)\s+(\w+)\s+", source, re.MULTILINE)]
+def parse_vala_object_types(source) -> List[ApiObjectType]:
+    return [ApiObjectType(m.group(3), m.group(2)) for m in OBJECT_TYPE_PATTERN.finditer(source, re.MULTILINE)]
 
-def parse_vapi_functions(vapi):
+def parse_vapi_functions(vapi) -> List[ApiFunction]:
     return [ApiFunction(m.group(1), m.group(0)) for m in re.finditer(r"^\tpublic static .+ (\w+) \(.+;", vapi, re.MULTILINE)]
 
+@dataclass
 class ApiSpec:
-    def __init__(self, version, object_types, functions, enum_types, error_types):
-        self.version = version
-        self.object_types = object_types
-        self.functions = functions
-        self.enum_types = enum_types
-        self.error_types = error_types
+    frida_version: str
+    frida_version_components: List[int]
+    version: str
+    object_types: List[ApiObjectType]
+    functions: List[ApiFunction]
+    enum_types: List[ApiEnum]
+    error_types: List[ApiEnum]
 
 class ApiEnum:
     def __init__(self, name):
@@ -503,6 +629,23 @@ def fuzzysort(items, keys):
                 break
     result.extend(remaining)
     return result
+
+class OutputFile:
+    def __init__(self, output_path):
+        self._output_path = output_path
+        self._io = StringIO()
+
+    def __enter__(self):
+        return self._io
+
+    def __exit__(self, *exc):
+        result = self._io.getvalue()
+        if self._output_path.exists():
+            existing_contents = self._output_path.read_text(encoding='utf-8')
+            if existing_contents == result:
+                return False
+        self._output_path.write_text(result, encoding='utf-8')
+        return False
 
 
 if __name__ == '__main__':

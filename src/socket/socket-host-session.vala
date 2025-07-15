@@ -1,5 +1,5 @@
 namespace Frida {
-	public class SocketHostSessionBackend : Object, HostSessionBackend {
+	public sealed class SocketHostSessionBackend : Object, HostSessionBackend {
 		private SocketHostSessionProvider provider;
 
 		public async void start (Cancellable? cancellable) throws IOError {
@@ -14,7 +14,7 @@ namespace Frida {
 		}
 	}
 
-	public class SocketHostSessionProvider : Object, HostSessionProvider {
+	public sealed class SocketHostSessionProvider : Object, HostSessionProvider {
 		public string id {
 			get { return "socket"; }
 		}
@@ -199,6 +199,21 @@ namespace Frida {
 			host_session_detached (entry.host_session);
 		}
 
+		private HostEntry get_host_entry_by_session (HostSession session) throws Error {
+			var entry = find_host_entry_by_session (session);
+			if (entry == null)
+				throw new Error.INVALID_ARGUMENT ("Invalid host session");
+			return entry;
+		}
+
+		private HostEntry? find_host_entry_by_session (HostSession session) {
+			foreach (var entry in hosts) {
+				if (entry.host_session == session)
+					return entry;
+			}
+			return null;
+		}
+
 		private void on_host_connection_closed (DBusConnection connection, bool remote_peer_vanished, GLib.Error? error) {
 			bool closed_by_us = (!remote_peer_vanished && error == null);
 			if (closed_by_us)
@@ -219,11 +234,38 @@ namespace Frida {
 
 		public async AgentSession link_agent_session (HostSession host_session, AgentSessionId id, AgentMessageSink sink,
 				Cancellable? cancellable) throws Error, IOError {
-			foreach (var entry in hosts) {
-				if (entry.host_session == host_session)
-					return yield entry.link_agent_session (id, sink, cancellable);
-			}
-			throw new Error.INVALID_ARGUMENT ("Invalid host session");
+			var entry = get_host_entry_by_session (host_session);
+			return yield entry.link_agent_session (id, sink, cancellable);
+		}
+
+		public void unlink_agent_session (HostSession host_session, AgentSessionId id) {
+			var entry = find_host_entry_by_session (host_session);
+			if (entry != null)
+				entry.unlink_agent_session (id);
+		}
+
+		public async IOStream link_channel (HostSession host_session, ChannelId id, Cancellable? cancellable)
+				throws Error, IOError {
+			var entry = get_host_entry_by_session (host_session);
+			return yield entry.link_channel (id, cancellable);
+		}
+
+		public void unlink_channel (HostSession host_session, ChannelId id) {
+			var entry = find_host_entry_by_session (host_session);
+			if (entry != null)
+				entry.unlink_channel (id);
+		}
+
+		public async ServiceSession link_service_session (HostSession host_session, ServiceSessionId id, Cancellable? cancellable)
+				throws Error, IOError {
+			var entry = get_host_entry_by_session (host_session);
+			return yield entry.link_service_session (id, cancellable);
+		}
+
+		public void unlink_service_session (HostSession host_session, ServiceSessionId id) {
+			var entry = find_host_entry_by_session (host_session);
+			if (entry != null)
+				entry.unlink_service_session (id);
 		}
 
 		private void on_agent_session_detached (AgentSessionId id, SessionDetachReason reason, CrashInfo crash) {
@@ -252,6 +294,8 @@ namespace Frida {
 
 			private Gee.HashMap<AgentSessionId?, AgentSessionEntry> agent_sessions =
 				new Gee.HashMap<AgentSessionId?, AgentSessionEntry> (AgentSessionId.hash, AgentSessionId.equal);
+			private ChannelRegistry channel_registry = new ChannelRegistry ();
+			private ServiceSessionRegistry service_session_registry = new ServiceSessionRegistry ();
 
 			private Cancellable io_cancellable = new Cancellable ();
 
@@ -291,6 +335,10 @@ namespace Frida {
 					agent_session_detached (id, reason, no_crash);
 				agent_sessions.clear ();
 
+				channel_registry.clear ();
+
+				service_session_registry.clear ();
+
 				if (reason != CONNECTION_TERMINATED) {
 					try {
 						yield connection.close (cancellable);
@@ -313,6 +361,41 @@ namespace Frida {
 				entry.sink_registration_id = connection.register_object (ObjectPath.for_agent_message_sink (id), sink);
 
 				return session;
+			}
+
+			public void unlink_agent_session (AgentSessionId id) {
+				AgentSessionEntry? entry = agent_sessions[id];
+				if (entry == null || entry.sink_registration_id == 0)
+					return;
+
+				entry.connection.unregister_object (entry.sink_registration_id);
+				entry.sink_registration_id = 0;
+			}
+
+			public async IOStream link_channel (ChannelId id, Cancellable? cancellable) throws Error, IOError {
+				Channel channel = yield connection.get_proxy (null, ObjectPath.for_channel (id),
+					DO_NOT_LOAD_PROPERTIES, cancellable);
+
+				var stream = new ChannelStream (channel);
+				channel_registry.register (id, stream);
+
+				return stream;
+			}
+
+			public void unlink_channel (ChannelId id) {
+				channel_registry.unlink (id);
+			}
+
+			public async ServiceSession link_service_session (ServiceSessionId id, Cancellable? cancellable)
+					throws Error, IOError {
+				ServiceSession session = yield connection.get_proxy (null, ObjectPath.for_service_session (id),
+					DO_NOT_LOAD_PROPERTIES, cancellable);
+				service_session_registry.register (id, session);
+				return session;
+			}
+
+			public void unlink_service_session (ServiceSessionId id) {
+				service_session_registry.unlink (id);
 			}
 
 			private bool on_keepalive_tick () {

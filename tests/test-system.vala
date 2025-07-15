@@ -12,7 +12,6 @@ namespace Frida.SystemTest {
 
 			switch (Frida.Test.os ()) {
 				case Frida.Test.OS.WINDOWS:
-				case Frida.Test.OS.IOS:
 					int num_icons_seen = 0;
 					foreach (var p in processes) {
 						if (p.parameters.contains ("icons"))
@@ -30,10 +29,6 @@ namespace Frida.SystemTest {
 
 			if (GLib.Test.verbose ())
 				stdout.printf (" [spent %f and %f] ", time_spent_on_first_run, time_spent_on_second_run);
-
-			if (Frida.Test.os () == Frida.Test.OS.IOS) {
-				assert_true (time_spent_on_second_run <= time_spent_on_first_run / 2.0);
-			}
 		});
 	}
 }

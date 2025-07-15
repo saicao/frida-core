@@ -1,58 +1,65 @@
 compiler_sources = files(
   'compiler.vala',
+  'backend-glue.c',
 )
 
-if get_option('compiler_snapshot').auto()
-  # Generating our snapshot with V8's CPU simulator takes a very long time.
-  use_snapshot = meson.can_run_host_binaries()
-else
-  use_snapshot = get_option('compiler_snapshot').enabled()
+if have_compiler_backend
+  compiler_backend = custom_target('frida-compiler-backend',
+    input: [
+      'go.mod',
+      'go.sum',
+      'backend.go',
+      'backend.version',
+      'tscompiler.go',
+      'tsconfig.go',
+      'shims.go',
+      'package.json',
+      'package-lock.json',
+    ],
+    output: [
+      'frida-compiler-backend' + (compiler_backend_static_compilation ? '.a' : ('-raw' + shlib_suffix)),
+      'frida-compiler-backend.h',
+    ],
+    command: [
+      python,
+      files('build-backend.py'),
+      go_config,
+      meson.current_build_dir(),
+      '@PRIVATE_DIR@',
+      go,
+      npm,
+      '@INPUT@',
+    ],
+  )
+  if compiler_backend_static_compilation
+    backend_libs += compiler_backend[0]
+  else
+    filename = 'frida-compiler-backend' + shlib_suffix
+    identity = (host_os_family == 'darwin') ? 'FridaCompilerBackend' : filename
+    compiler_backend_shlib = custom_target('frida-compiler-backend-shlib',
+      input: compiler_backend[0],
+      output: filename,
+      command: post_process + ['shared-library', identity, 'elf-cleaner:off'],
+    )
+
+    compiler_data = custom_target('frida-data-compiler',
+      input: [
+        'compiler.resources',
+        compiler_backend_shlib,
+      ],
+      output: [
+        'frida-data-compiler.vapi',
+        'frida-data-compiler.h',
+        'frida-data-compiler.c',
+        'frida-data-compiler-blob' + resource_blob_extension,
+      ],
+      command: [
+        resource_compiler_cmd_array,
+        '-c', '@INPUT0@',
+        '-o', meson.current_build_dir() / 'frida-data-compiler',
+        '@INPUT1@',
+      ],
+    )
+    backend_sources += compiler_data
+  endif
 endif
-compiler_mksnapshot = use_snapshot ? v8_mksnapshot : ''
-
-compiler_agent = custom_target('frida-compiler-agent',
-  input: [
-    'agent-entrypoint.js',
-    'agent-core.ts',
-    'agent-warmup.js',
-    'package.json',
-    'package-lock.json',
-    'tsconfig.json',
-    'rollup.config.agent-core.ts',
-    'rollup.config.typescript.ts',
-  ],
-  output: [
-    'agent.js',
-    'snapshot.bin',
-  ],
-  command: [
-    find_program('generate-agent.py'),
-    meson.current_source_dir(),
-    meson.current_build_dir(),
-    host_os_family,
-    host_arch_gumjs,
-    host_cpu_mode,
-    compiler_mksnapshot,
-  ],
-)
-compiler_data = custom_target('frida-data-compiler',
-  input: [
-    'compiler.resources',
-    compiler_agent,
-  ],
-  output: [
-    'frida-data-compiler.vapi',
-    'frida-data-compiler.h',
-    'frida-data-compiler.c',
-    'frida-data-compiler-blob.S',
-  ],
-  command: [
-    resource_compiler,
-    '--toolchain=' + host_toolchain,
-    '-c', '@INPUT0@',
-    '-o', join_paths(meson.current_build_dir(), 'frida-data-compiler'),
-    '@INPUT1@',
-    '@INPUT2@',
-  ],
-)
-compiler_sources += compiler_data

@@ -408,7 +408,7 @@ namespace Frida {
 		protected extern InputStream _get_fifo_for_inject_instance (void * instance);
 		protected extern void _free_inject_instance (void * instance, UnloadPolicy unload_policy);
 
-		public class ResourceStore {
+		public sealed class ResourceStore {
 			public TemporaryDirectory tempdir {
 				get;
 				private set;
@@ -439,7 +439,7 @@ namespace Frida {
 		}
 	}
 
-	public class AgentDescriptor : Object {
+	public sealed class AgentDescriptor : Object {
 		public string name {
 			get;
 			construct;
@@ -553,7 +553,7 @@ namespace Frida {
 		}
 	}
 
-	private class RemoteModule {
+	private sealed class RemoteModule {
 		private Gum.Address base_address;
 		private Gum.ElfModule module;
 
@@ -587,7 +587,7 @@ namespace Frida {
 		}
 	}
 
-	private class RemoteThreadSession : Object {
+	private sealed class RemoteThreadSession : Object {
 		public signal void ended (UnloadPolicy unload_policy);
 
 		public uint id {

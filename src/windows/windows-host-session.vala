@@ -1,91 +1,24 @@
 namespace Frida {
-	public class WindowsHostSessionBackend : Object, HostSessionBackend {
-		private WindowsHostSessionProvider local_provider;
-
-		public async void start (Cancellable? cancellable) throws IOError {
-			assert (local_provider == null);
-			local_provider = new WindowsHostSessionProvider ();
-			provider_available (local_provider);
-		}
-
-		public async void stop (Cancellable? cancellable) throws IOError {
-			assert (local_provider != null);
-			provider_unavailable (local_provider);
-			yield local_provider.close (cancellable);
-			local_provider = null;
+	public sealed class WindowsHostSessionBackend : LocalHostSessionBackend {
+		protected override LocalHostSessionProvider make_provider () {
+			return new WindowsHostSessionProvider ();
 		}
 	}
 
-	public class WindowsHostSessionProvider : Object, HostSessionProvider {
-		public string id {
-			get { return "local"; }
-		}
-
-		public string name {
-			get { return "Local System"; }
-		}
-
-		public Variant? icon {
-			get { return _icon; }
-		}
-		private Variant? _icon;
-
-		public HostSessionProviderKind kind {
-			get { return HostSessionProviderKind.LOCAL; }
-		}
-
-		private WindowsHostSession host_session;
-
-		construct {
-			_icon = _try_extract_icon ();
-		}
-
-		public async void close (Cancellable? cancellable) throws IOError {
-			if (host_session == null)
-				return;
-			host_session.agent_session_detached.disconnect (on_agent_session_detached);
-			yield host_session.close (cancellable);
-			host_session = null;
-		}
-
-		public async HostSession create (HostSessionOptions? options, Cancellable? cancellable) throws Error, IOError {
-			if (host_session != null)
-				throw new Error.INVALID_OPERATION ("Already created");
-
+	public sealed class WindowsHostSessionProvider : LocalHostSessionProvider {
+		protected override LocalHostSession make_host_session (HostSessionOptions? options) throws Error {
 			var tempdir = new TemporaryDirectory ();
-
-			host_session = new WindowsHostSession (new WindowsHelperProcess (tempdir), tempdir);
-			host_session.agent_session_detached.connect (on_agent_session_detached);
-
-			return host_session;
+			return new WindowsHostSession (new WindowsHelperProcess (tempdir), tempdir);
 		}
 
-		public async void destroy (HostSession session, Cancellable? cancellable) throws Error, IOError {
-			if (session != host_session)
-				throw new Error.INVALID_ARGUMENT ("Invalid host session");
-
-			host_session.agent_session_detached.disconnect (on_agent_session_detached);
-
-			yield host_session.close (cancellable);
-			host_session = null;
-		}
-
-		public async AgentSession link_agent_session (HostSession host_session, AgentSessionId id, AgentMessageSink sink,
-				Cancellable? cancellable) throws Error, IOError {
-			if (host_session != this.host_session)
-				throw new Error.INVALID_ARGUMENT ("Invalid host session");
-
-			return yield this.host_session.link_agent_session (id, sink, cancellable);
-		}
-
-		private void on_agent_session_detached (AgentSessionId id, SessionDetachReason reason, CrashInfo crash) {
-			agent_session_detached (id, reason, crash);
+		protected override Variant? load_icon () {
+			return _try_extract_icon ();
 		}
 
 		public extern static Variant? _try_extract_icon ();
 	}
 
-	public class WindowsHostSession : BaseDBusHostSession {
+	public sealed class WindowsHostSession : LocalHostSession {
 		public WindowsHelper helper {
 			get;
 			construct;
@@ -113,21 +46,23 @@ namespace Frida {
 			injector = new Winjector (helper, false, tempdir);
 			injector.uninjected.connect (on_uninjected);
 
-			var blob32 = Frida.Data.Agent.get_frida_agent_32_dll_blob ();
-			var blob64 = Frida.Data.Agent.get_frida_agent_64_dll_blob ();
-			var dbghelp32 = Frida.Data.Agent.get_dbghelp_32_dll_blob ();
-			var dbghelp64 = Frida.Data.Agent.get_dbghelp_64_dll_blob ();
-			var symsrv32 = Frida.Data.Agent.get_symsrv_32_dll_blob ();
-			var symsrv64 = Frida.Data.Agent.get_symsrv_64_dll_blob ();
-
 			agent = new AgentDescriptor (PathTemplate ("<arch>\\frida-agent.dll"),
-				new Bytes.static (blob32.data),
-				new Bytes.static (blob64.data),
+				new Bytes.static (Frida.Data.Agent.get_frida_agent_arm64_dll_blob ().data),
+				new Bytes.static (Frida.Data.Agent.get_frida_agent_x86_64_dll_blob ().data),
+				new Bytes.static (Frida.Data.Agent.get_frida_agent_x86_dll_blob ().data),
 				new AgentResource[] {
-					new AgentResource ("32\\dbghelp.dll", new Bytes.static (dbghelp32.data), tempdir),
-					new AgentResource ("32\\symsrv.dll", new Bytes.static (symsrv32.data), tempdir),
-					new AgentResource ("64\\dbghelp.dll", new Bytes.static (dbghelp64.data), tempdir),
-					new AgentResource ("64\\symsrv.dll", new Bytes.static (symsrv64.data), tempdir)
+					new AgentResource ("arm64\\dbghelp.dll",
+						new Bytes.static (Frida.Data.Agent.get_dbghelp_arm64_dll_blob ().data), tempdir),
+					new AgentResource ("arm64\\symsrv.dll",
+						new Bytes.static (Frida.Data.Agent.get_symsrv_arm64_dll_blob ().data), tempdir),
+					new AgentResource ("x86_64\\dbghelp.dll",
+						new Bytes.static (Frida.Data.Agent.get_dbghelp_x86_64_dll_blob ().data), tempdir),
+					new AgentResource ("x86_64\\symsrv.dll",
+						new Bytes.static (Frida.Data.Agent.get_symsrv_x86_64_dll_blob ().data), tempdir),
+					new AgentResource ("x86\\dbghelp.dll",
+						new Bytes.static (Frida.Data.Agent.get_dbghelp_x86_dll_blob ().data), tempdir),
+					new AgentResource ("x86\\symsrv.dll",
+						new Bytes.static (Frida.Data.Agent.get_symsrv_x86_dll_blob ().data), tempdir),
 				},
 				tempdir
 			);
@@ -164,7 +99,23 @@ namespace Frida {
 		protected override async AgentSessionProvider create_system_session_provider (Cancellable? cancellable,
 				out DBusConnection connection) throws Error, IOError {
 			var path_template = agent.get_path_template ();
-			var agent_path = path_template.expand (sizeof (void *) == 8 ? "64" : "32");
+
+			unowned string arch;
+			switch (Gum.NATIVE_CPU) {
+				case ARM64:
+					arch = "arm64";
+					break;
+				case AMD64:
+					arch = "x86_64";
+					break;
+				case IA32:
+					arch = "x86";
+					break;
+				default:
+					assert_not_reached ();
+			}
+
+			var agent_path = path_template.expand (arch);
 
 			system_session_container = yield AgentContainer.create (agent_path, cancellable);
 
@@ -287,7 +238,7 @@ namespace Frida {
 		public extern static bool _process_is_alive (uint pid);
 	}
 
-	public class ChildProcess : Object {
+	public sealed class ChildProcess : Object {
 		public unowned Object parent {
 			get;
 			construct;
@@ -329,12 +280,26 @@ namespace Frida {
 			close ();
 		}
 
-		public extern void close ();
+		public void close () {
+			if (closed)
+				return;
+			_do_close ();
+			closed = true;
+		}
 
-		public extern void resume () throws Error;
+		public extern void _do_close ();
+
+		public void resume () throws Error {
+			if (resumed)
+				throw new Error.INVALID_OPERATION ("Already resumed");
+			_do_resume ();
+			resumed = true;
+		}
+
+		public extern void _do_resume ();
 	}
 
-	public class StdioPipes : Object {
+	public sealed class StdioPipes : Object {
 		public OutputStream input {
 			get;
 			construct;

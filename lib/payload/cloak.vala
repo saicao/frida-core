@@ -1,5 +1,5 @@
 namespace Frida {
-	public class ThreadIgnoreScope {
+	public sealed class ThreadIgnoreScope {
 		public enum Kind {
 			APPLICATION_THREAD,
 			FRIDA_THREAD
@@ -43,7 +43,7 @@ namespace Frida {
 	}
 
 #if ANDROID
-	public class ThreadCountCloaker : Object {
+	public sealed class ThreadCountCloaker : Object {
 		private ReadFunc * read_slot;
 		private static ReadFunc old_read_impl;
 
@@ -53,15 +53,18 @@ namespace Frida {
 		private delegate ssize_t ReadFunc (int fd, void * buf, size_t count);
 
 		construct {
-			Gum.Module.enumerate_imports ("libart.so", imp => {
-				if (imp.name == "read") {
-					read_slot = (ReadFunc *) imp.slot;
-					return false;
-				}
-				return true;
-			});
-			if (read_slot != null)
-				old_read_impl = update_read_slot (on_read);
+			var art = Gum.Process.find_module_by_name ("libart.so");
+			if (art != null) {
+				art.enumerate_imports (imp => {
+					if (imp.name == "read") {
+						read_slot = (ReadFunc *) imp.slot;
+						return false;
+					}
+					return true;
+				});
+				if (read_slot != null)
+					old_read_impl = update_read_slot (on_read);
+			}
 		}
 
 		~ThreadCountCloaker () {
@@ -153,12 +156,12 @@ namespace Frida {
 		}
 	}
 #else
-	public class ThreadCountCloaker : Object {
+	public sealed class ThreadCountCloaker : Object {
 	}
 #endif
 
 #if LINUX
-	public class ThreadListCloaker : Object, DirListFilter {
+	public sealed class ThreadListCloaker : Object, DirListFilter {
 		private string our_dir_by_pid;
 		private DirListCloaker cloaker;
 
@@ -177,7 +180,7 @@ namespace Frida {
 		}
 	}
 
-	public class FDListCloaker : Object, DirListFilter {
+	public sealed class FDListCloaker : Object, DirListFilter {
 		private string our_dir_by_pid;
 		private DirListCloaker cloaker;
 
@@ -196,7 +199,7 @@ namespace Frida {
 		}
 	}
 
-	private class DirListCloaker : Object {
+	private sealed class DirListCloaker : Object {
 		public weak DirListFilter filter {
 			get;
 			construct;
@@ -212,38 +215,38 @@ namespace Frida {
 		construct {
 			var interceptor = Gum.Interceptor.obtain ();
 
-			unowned string libc = Gum.Process.query_libc_name ();
+			var libc = Gum.Process.get_libc_module ();
 
 			var open_listener = new OpenDirListener (this);
 			listeners.add (open_listener);
-			interceptor.attach (Gum.Module.find_export_by_name (libc, "opendir"), open_listener);
+			interceptor.attach ((void *) libc.find_export_by_name ("opendir"), open_listener);
 
 			var close_listener = new CloseDirListener (this);
 			listeners.add (close_listener);
-			interceptor.attach (Gum.Module.find_export_by_name (libc, "closedir"), close_listener);
+			interceptor.attach ((void *) libc.find_export_by_name ("closedir"), close_listener);
 
-			var readdir_impl = Gum.Module.find_export_by_name (libc, "readdir");
+			var readdir_impl = libc.find_export_by_name ("readdir");
 			var readdir_listener = new ReadDirListener (this, LEGACY);
 			listeners.add (readdir_listener);
-			interceptor.attach (readdir_impl, readdir_listener);
+			interceptor.attach ((void *) readdir_impl, readdir_listener);
 
-			var readdir64_impl = Gum.Module.find_export_by_name (libc, "readdir64");
-			if (readdir64_impl != null && readdir64_impl != readdir_impl) {
+			var readdir64_impl = libc.find_export_by_name ("readdir64");
+			if (readdir64_impl != 0 && readdir64_impl != readdir_impl) {
 				var listener = new ReadDirListener (this, MODERN);
 				listeners.add (listener);
-				interceptor.attach (readdir64_impl, listener);
+				interceptor.attach ((void *) readdir64_impl, listener);
 			}
 
-			var readdir_r_impl = Gum.Module.find_export_by_name (libc, "readdir_r");
+			var readdir_r_impl = libc.find_export_by_name ("readdir_r");
 			var readdir_r_listener = new ReadDirRListener (this, LEGACY);
 			listeners.add (readdir_r_listener);
-			interceptor.attach (readdir_r_impl, readdir_r_listener);
+			interceptor.attach ((void *) readdir_r_impl, readdir_r_listener);
 
-			var readdir64_r_impl = Gum.Module.find_export_by_name (libc, "readdir64_r");
-			if (readdir64_r_impl != null && readdir64_r_impl != readdir_r_impl) {
+			var readdir64_r_impl = libc.find_export_by_name ("readdir64_r");
+			if (readdir64_r_impl != 0 && readdir64_r_impl != readdir_r_impl) {
 				var listener = new ReadDirRListener (this, MODERN);
 				listeners.add (listener);
-				interceptor.attach (readdir64_r_impl, listener);
+				interceptor.attach ((void *) readdir64_r_impl, listener);
 			}
 		}
 
@@ -464,10 +467,10 @@ namespace Frida {
 		public abstract bool matches_file (string name);
 	}
 #else
-	public class ThreadListCloaker : Object {
+	public sealed class ThreadListCloaker : Object {
 	}
 
-	public class FDListCloaker : Object {
+	public sealed class FDListCloaker : Object {
 	}
 #endif
 }

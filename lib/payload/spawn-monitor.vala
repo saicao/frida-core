@@ -1,5 +1,5 @@
 namespace Frida {
-	public class SpawnMonitor : Object, Gum.InvocationListener {
+	public sealed class SpawnMonitor : Object, Gum.InvocationListener {
 		public weak SpawnHandler handler {
 			get;
 			construct;
@@ -27,7 +27,7 @@ namespace Frida {
 
 		private void * execve;
 
-		private Private posix_spawn_caller_is_internal = new Private ();
+		private static Private posix_spawn_caller_is_internal = new Private ();
 #endif
 
 		public SpawnMonitor (SpawnHandler handler, MainContext main_context) {
@@ -38,27 +38,36 @@ namespace Frida {
 			var interceptor = Gum.Interceptor.obtain ();
 
 #if WINDOWS
-			var create_process_internal = Gum.Module.find_export_by_name ("kernelbase.dll", "CreateProcessInternalW");
-			if (create_process_internal == null)
-				create_process_internal = Gum.Module.find_export_by_name ("kernel32.dll", "CreateProcessInternalW");
-			assert (create_process_internal != null);
-			interceptor.attach (create_process_internal, this);
+			var kernelbase = Gum.Process.find_module_by_name ("kernelbase.dll");
+			var create_process_internal = (kernelbase != null) ? kernelbase.find_export_by_name ("CreateProcessInternalW") : 0;
+			if (create_process_internal == 0) {
+				create_process_internal = Gum.Process.find_module_by_name ("kernel32.dll")
+					.find_export_by_name ("CreateProcessInternalW");
+			}
+			assert (create_process_internal != 0);
+			interceptor.attach ((void *) create_process_internal, this);
 #else
-			unowned string libc = Gum.Process.query_libc_name ();
+			var libc = Gum.Process.get_libc_module ();
 #if DARWIN
-			posix_spawn = (PosixSpawnFunc) Gum.Module.find_export_by_name (libc, "posix_spawn");
-			posix_spawnattr_init = (PosixSpawnAttrInitFunc) Gum.Module.find_export_by_name (libc, "posix_spawnattr_init");
-			posix_spawnattr_destroy = (PosixSpawnAttrDestroyFunc) Gum.Module.find_export_by_name (libc, "posix_spawnattr_destroy");
-			posix_spawnattr_getflags = (PosixSpawnAttrSetFlagsFunc) Gum.Module.find_export_by_name (libc, "posix_spawnattr_getflags");
-			posix_spawnattr_setflags = (PosixSpawnAttrSetFlagsFunc) Gum.Module.find_export_by_name (libc, "posix_spawnattr_setflags");
+			posix_spawn = (PosixSpawnFunc) libc.find_export_by_name ("posix_spawn");
+			posix_spawnattr_init = (PosixSpawnAttrInitFunc) libc.find_export_by_name ("posix_spawnattr_init");
+			posix_spawnattr_destroy = (PosixSpawnAttrDestroyFunc) libc.find_export_by_name ("posix_spawnattr_destroy");
+			posix_spawnattr_getflags = (PosixSpawnAttrSetFlagsFunc) libc.find_export_by_name ("posix_spawnattr_getflags");
+			posix_spawnattr_setflags = (PosixSpawnAttrSetFlagsFunc) libc.find_export_by_name ("posix_spawnattr_setflags");
 
-			execve = Gum.Module.find_export_by_name (libc, "execve");
+			execve = (void *) libc.find_export_by_name ("execve");
 
 			interceptor.attach ((void *) posix_spawn, this);
 
 			interceptor.replace (execve, (void *) replacement_execve, this);
 #else
-			interceptor.attach (Gum.Module.find_export_by_name (libc, "execve"), this);
+			Gum.Address execve = 0;
+#if ANDROID
+			execve = libc.find_symbol_by_name ("__execve");
+#endif
+			if (execve == 0)
+				execve = libc.find_export_by_name ("execve");
+			interceptor.attach ((void *) execve, this);
 #endif
 #endif
 		}

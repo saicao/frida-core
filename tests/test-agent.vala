@@ -148,7 +148,7 @@ rpc.exports = {
   },
 };
 
-Interceptor.attach(Module.getExportByName('/usr/lib/system/libsystem_kernel.dylib', '__posix_spawn'), {
+Interceptor.attach(Process.getModuleByName('/usr/lib/system/libsystem_kernel.dylib').getExportByName('__posix_spawn'), {
   onEnter(args) {
     if (active === 0)
       return;
@@ -329,6 +329,12 @@ Interceptor.attach(Module.getExportByName('/usr/lib/system/libsystem_kernel.dyli
 		}
 
 		private static async void thread_suspend_awareness (Harness h) {
+			if (!GLib.Test.slow ()) {
+				stdout.printf ("<skipping, run in slow mode> ");
+				h.done ();
+				return;
+			}
+
 			var session = yield h.load_agent ();
 
 			try {
@@ -337,7 +343,7 @@ Interceptor.attach(Module.getExportByName('/usr/lib/system/libsystem_kernel.dyli
 				var script_id = yield session.create_script ("""
 console.log('Script runtime is: ' + Script.runtime);
 
-Interceptor.attach(Module.getExportByName('libsystem_kernel.dylib', 'open'), () => {
+Interceptor.attach(Process.getModuleByName('libsystem_kernel.dylib').getExportByName('open'), () => {
 });
 """, make_parameters_dict (), cancellable);
 				yield session.load_script (script_id, cancellable);
@@ -394,7 +400,7 @@ Interceptor.attach(Module.getExportByName('libsystem_kernel.dylib', 'open'), () 
 		public extern static uint target_function (int level, string message);
 	}
 
-	private class Harness : Frida.Test.AsyncHarness, AgentController, AgentMessageSink {
+	private sealed class Harness : Frida.Test.AsyncHarness, AgentController, AgentMessageSink {
 		private GLib.Module module;
 		[CCode (has_target = false)]
 		private delegate void AgentMainFunc (string data, ref Frida.UnloadPolicy unload_policy, void * opaque_injector_state);
@@ -421,15 +427,10 @@ Interceptor.attach(Module.getExportByName('libsystem_kernel.dylib', 'open'), () 
 			Cancellable? cancellable = null;
 
 			string agent_filename;
-#if WINDOWS
-			var intermediate_root_dir = Path.get_dirname (Path.get_dirname (Frida.Test.Process.current.filename));
-			if (sizeof (void *) == 4)
-				agent_filename = Path.build_filename (intermediate_root_dir, "frida-agent-32", "frida-agent-32.dll");
-			else
-				agent_filename = Path.build_filename (intermediate_root_dir, "frida-agent-64", "frida-agent-64.dll");
-#else
 			string shlib_extension;
-#if DARWIN
+#if WINDOWS
+			shlib_extension = "dll";
+#elif DARWIN
 			shlib_extension = "dylib";
 #else
 			shlib_extension = "so";
@@ -443,10 +444,12 @@ Interceptor.attach(Module.getExportByName('libsystem_kernel.dylib', 'open'), () 
 			if (!FileUtils.test (agent_filename, FileTest.EXISTS))
 				agent_filename = Path.build_filename (frida_root_dir, "lib", "agent", "frida-agent." + shlib_extension);
 #endif
-#endif
 
-			module = GLib.Module.open (agent_filename, LOCAL | LAZY);
-			assert_nonnull (module);
+			try {
+				module = new Module (agent_filename, LOCAL | LAZY);
+			} catch (ModuleError e) {
+				assert_not_reached ();
+			}
 
 			void * main_func_symbol;
 			var main_func_found = module.symbol ("frida_agent_main", out main_func_symbol);
@@ -563,7 +566,7 @@ Interceptor.attach(Module.getExportByName('libsystem_kernel.dylib', 'open'), () 
 			injector_state = &s;
 #endif
 
-			string agent_parameters = transport_address + "|exit-monitor:off|thread-suspend-monitor:off";
+			string agent_parameters = transport_address;
 
 			main_impl (agent_parameters, ref unload_policy, injector_state);
 

@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 import argparse
 import hashlib
 import os
@@ -31,7 +29,6 @@ def main():
     parser.add_argument("--nm", metavar="/path/to/nm", type=str, default=None)
     parser.add_argument("--readelf", metavar="/path/to/readelf", type=str, default=None)
     parser.add_argument("--otool", metavar="/path/to/otool", type=str, default=None)
-    parser.add_argument("--strip", metavar="/path/to/strip", type=str, default=None)
 
     the_endians = ('big', 'little')
     parser.add_argument("--endian",  metavar=("|".join(the_endians)), type=str, default='little', choices=the_endians)
@@ -80,7 +77,7 @@ def main():
         magic = f.read(2)
     if magic == b"MZ":
         # For now we will assume that no processing is needed for our Windows binaries.
-        shutil.copyfile(args.input.name, args.output)
+        shutil.copy(args.input.name, args.output)
         return
 
     try:
@@ -135,10 +132,6 @@ class ModuleEditor(object):
 
             self._write_function_pointer_vector(self.constructors, destination)
             self._write_function_pointer_vector(self.destructors, destination)
-
-        strip = self.toolchain.strip
-        if strip is not None:
-            subprocess.check_call(strip + [temp_destination_path])
 
         shutil.move(temp_destination_path, destination_path)
 
@@ -206,7 +199,9 @@ class ModuleEditor(object):
             else:
                 address = value
 
-            name = symbols.resolve(address)
+            name = symbols.find(address)
+            if name is None:
+                name = f"sub_{address:x}"
             if is_macho and name.startswith("_"):
                 name = name[1:]
 
@@ -290,7 +285,6 @@ class Toolchain(object):
         self.nm = ["nm"]
         self.readelf = ["readelf"]
         self.otool = ["otool"]
-        self.strip = None
 
     def __repr__(self):
         return "Toolchain({})".format(", ".join([k + "=" + repr(v) for k, v in vars(self).items()]))
@@ -413,16 +407,8 @@ class Symbols(object):
     def __repr__(self):
         return "Symbols(items=<{} objects>".format(len(self.items))
 
-    def resolve(self, address):
-        result = self.items.get(address, None)
-        if result is None:
-            raise SymbolNotFound("unable to resolve address 0x{address:0{width}x}".format(address=address, width=self._pointer_size * 2))
-        return result
-
-
-class SymbolNotFound(ValueError):
-    def __init__(self, message):
-        super().__init__(message)
+    def find(self, address):
+        return self.items.get(address, None)
 
 
 class Section(object):

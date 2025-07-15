@@ -1,130 +1,24 @@
 namespace Frida {
-	public class FruityHostSessionBackend : Object, HostSessionBackend {
-		private Fruity.UsbmuxClient control_client;
-
-		private Gee.HashSet<uint> devices = new Gee.HashSet<uint> ();
-		private Gee.HashMap<uint, FruityHostSessionProvider> providers = new Gee.HashMap<uint, FruityHostSessionProvider> ();
-
-		private Promise<bool> start_request;
-		private Cancellable start_cancellable;
-		private SourceFunc on_start_completed;
+	public sealed class FruityHostSessionBackend : Object, HostSessionBackend {
+		private Fruity.DeviceMonitor device_monitor = new Fruity.DeviceMonitor ();
+		private Gee.Map<Fruity.Device, FruityHostSessionProvider> providers =
+			new Gee.HashMap<Fruity.Device, FruityHostSessionProvider> ();
 
 		private Cancellable io_cancellable = new Cancellable ();
 
+		construct {
+			device_monitor.device_attached.connect (on_device_attached);
+			device_monitor.device_detached.connect (on_device_detached);
+		}
+
 		public async void start (Cancellable? cancellable) throws IOError {
-			start_request = new Promise<bool> ();
-			start_cancellable = new Cancellable ();
-			on_start_completed = start.callback;
-
-			var main_context = MainContext.get_thread_default ();
-
-			var timeout_source = new TimeoutSource (500);
-			timeout_source.set_callback (start.callback);
-			timeout_source.attach (main_context);
-
-			var cancel_source = new CancellableSource (cancellable);
-			cancel_source.set_callback (start.callback);
-			cancel_source.attach (main_context);
-
-			do_start.begin ();
-
-			yield;
-
-			cancel_source.destroy ();
-			timeout_source.destroy ();
-			on_start_completed = null;
-		}
-
-		private async void do_start () {
-			bool success = yield try_start_control_connection ();
-
-			if (success) {
-				/* Perform a dummy-request to flush out any pending device attach notifications. */
-				try {
-					yield control_client.connect_to_port (Fruity.DeviceId (uint.MAX), 0, start_cancellable);
-					assert_not_reached ();
-				} catch (GLib.Error expected_error) {
-					if (expected_error.code == IOError.CONNECTION_CLOSED) {
-						/* Deal with usbmuxd closing the connection when receiving commands in the wrong state. */
-						control_client.close.begin (null);
-
-						success = yield try_start_control_connection ();
-						if (success) {
-							Fruity.UsbmuxClient flush_client = null;
-							try {
-								flush_client = yield Fruity.UsbmuxClient.open (start_cancellable);
-								try {
-									yield flush_client.connect_to_port (
-											Fruity.DeviceId (uint.MAX), 0,
-											start_cancellable);
-									assert_not_reached ();
-								} catch (GLib.Error expected_error) {
-								}
-							} catch (GLib.Error e) {
-								success = false;
-							}
-
-							if (flush_client != null)
-								flush_client.close.begin (null);
-
-							if (!success && control_client != null) {
-								control_client.close.begin (null);
-								control_client = null;
-							}
-						}
-					}
-				}
-			}
-
-			start_request.resolve (success);
-
-			if (on_start_completed != null)
-				on_start_completed ();
-		}
-
-		private async bool try_start_control_connection () {
-			bool success = true;
-
-			try {
-				control_client = yield Fruity.UsbmuxClient.open (start_cancellable);
-
-				control_client.device_attached.connect ((details) => {
-					add_device.begin (details);
-				});
-				control_client.device_detached.connect ((id) => {
-					remove_device (id);
-				});
-
-				yield control_client.enable_listen_mode (start_cancellable);
-			} catch (GLib.Error e) {
-				success = false;
-			}
-
-			if (!success && control_client != null) {
-				control_client.close.begin (null);
-				control_client = null;
-			}
-
-			return success;
+			yield device_monitor.start (cancellable);
 		}
 
 		public async void stop (Cancellable? cancellable) throws IOError {
-			start_cancellable.cancel ();
-
-			try {
-				yield start_request.future.wait_async (cancellable);
-			} catch (Error e) {
-				assert_not_reached ();
-			}
-
-			if (control_client != null) {
-				yield control_client.close (cancellable);
-				control_client = null;
-			}
-
 			io_cancellable.cancel ();
 
-			devices.clear ();
+			yield device_monitor.stop (cancellable);
 
 			foreach (var provider in providers.values) {
 				provider_unavailable (provider);
@@ -133,152 +27,64 @@ namespace Frida {
 			providers.clear ();
 		}
 
-		private async void add_device (Fruity.DeviceDetails details) {
-			var id = details.id;
-			var raw_id = id.raw_value;
-			if (devices.contains (raw_id))
-				return;
-			devices.add (raw_id);
-
-			string? name = null;
-			Variant? icon = null;
-
-			if (details.connection_type == USB) {
-				bool got_details = false;
-				for (int i = 1; !got_details && devices.contains (raw_id); i++) {
-					try {
-						_extract_details_for_device (details.product_id.raw_value, details.udid.raw_value,
-							out name, out icon);
-						got_details = true;
-					} catch (Error e) {
-						if (i != 20) {
-							var main_context = MainContext.get_thread_default ();
-
-							var delay_source = new TimeoutSource.seconds (1);
-							delay_source.set_callback (add_device.callback);
-							delay_source.attach (main_context);
-
-							var cancel_source = new CancellableSource (io_cancellable);
-							cancel_source.set_callback (add_device.callback);
-							cancel_source.attach (main_context);
-
-							yield;
-
-							cancel_source.destroy ();
-							delay_source.destroy ();
-
-							if (io_cancellable.is_cancelled ())
-								return;
-						} else {
-							break;
-						}
-					}
-				}
-				if (!devices.contains (raw_id))
-					return;
-				if (!got_details) {
-					remove_device (id);
-					return;
-				}
-			} else {
-				name = "iOS Device [%s]".printf (details.network_address.address.to_string ());
-			}
-
-			var provider = new FruityHostSessionProvider (name, icon, details);
-			providers[raw_id] = provider;
-
+		private void on_device_attached (Fruity.Device device) {
+			var provider = new FruityHostSessionProvider (device);
+			providers[device] = provider;
 			provider_available (provider);
 		}
 
-		private void remove_device (Fruity.DeviceId id) {
-			var raw_id = id.raw_value;
-			if (!devices.contains (raw_id))
-				return;
-			devices.remove (raw_id);
-
+		private void on_device_detached (Fruity.Device device) {
 			FruityHostSessionProvider provider;
-			if (providers.unset (raw_id, out provider)) {
+			if (providers.unset (device, out provider)) {
 				provider_unavailable (provider);
 				provider.close.begin (io_cancellable);
 			}
 		}
-
-		public extern static void _extract_details_for_device (int product_id, string udid, out string name,
-			out Variant? icon) throws Error;
 	}
 
-	public class FruityHostSessionProvider : Object, HostSessionProvider, ChannelProvider, FruityLockdownProvider, Pairable {
+	public sealed class FruityHostSessionProvider : Object, HostSessionProvider, HostChannelProvider, Pairable {
+		public Fruity.Device device {
+			get;
+			construct;
+		}
+
 		public string id {
-			get { return device_details.udid.raw_value; }
+			get { return device.udid; }
 		}
 
 		public string name {
-			get { return device_name; }
+			get { return _name; }
 		}
 
 		public Variant? icon {
-			get { return device_icon; }
+			get { return device.icon; }
 		}
 
 		public HostSessionProviderKind kind {
 			get {
-				return (device_details.connection_type == USB)
+				return (device.connection_type == USB)
 					? HostSessionProviderKind.USB
 					: HostSessionProviderKind.REMOTE;
 			}
 		}
 
-		public string device_name {
-			get;
-			construct;
-		}
-
-		public Variant? device_icon {
-			get;
-			construct;
-		}
-
-		public Fruity.DeviceDetails device_details {
-			get;
-			construct;
-		}
-
 		private FruityHostSession? host_session;
-		private Promise<Fruity.LockdownClient>? lockdown_client_request;
-		private Timer? lockdown_client_timer;
+		private string _name;
 
-		private const double MAX_LOCKDOWN_CLIENT_AGE = 30.0;
-
-		public FruityHostSessionProvider (string name, Variant? icon, Fruity.DeviceDetails details) {
-			Object (
-				device_name: name,
-				device_icon: icon,
-				device_details: details
-			);
+		public FruityHostSessionProvider (Fruity.Device device) {
+			Object (device: device);
+			_name = device.name;
 		}
 
 		public async void close (Cancellable? cancellable) throws IOError {
-			yield Fruity.DTXConnection.close_all (this, cancellable);
-
-			if (lockdown_client_request != null) {
-				Fruity.LockdownClient? lockdown = null;
-				try {
-					lockdown = yield get_lockdown_client (cancellable);
-				} catch (Error e) {
-				}
-
-				if (lockdown != null) {
-					on_lockdown_client_closed (lockdown);
-					yield lockdown.close (cancellable);
-				}
-			}
+			yield Fruity.DTXConnection.close_all (device, cancellable);
 		}
 
 		public async HostSession create (HostSessionOptions? options, Cancellable? cancellable) throws Error, IOError {
 			if (host_session != null)
 				throw new Error.INVALID_OPERATION ("Already created");
 
-			host_session = new FruityHostSession (this, this);
+			host_session = new FruityHostSession (device);
 			host_session.agent_session_detached.connect (on_agent_session_detached);
 
 			return host_session;
@@ -302,134 +108,54 @@ namespace Frida {
 			return yield this.host_session.link_agent_session (id, sink, cancellable);
 		}
 
+		public void unlink_agent_session (HostSession host_session, AgentSessionId id) {
+			if (host_session != this.host_session)
+				return;
+
+			this.host_session.unlink_agent_session (id);
+		}
+
+		public async IOStream link_channel (HostSession host_session, ChannelId id, Cancellable? cancellable)
+				throws Error, IOError {
+			if (host_session != this.host_session)
+				throw new Error.INVALID_ARGUMENT ("Invalid host session");
+
+			return this.host_session.link_channel (id);
+		}
+
+		public void unlink_channel (HostSession host_session, ChannelId id) {
+			if (host_session != this.host_session)
+				return;
+
+			this.host_session.unlink_channel (id);
+		}
+
+		public async ServiceSession link_service_session (HostSession host_session, ServiceSessionId id, Cancellable? cancellable)
+				throws Error, IOError {
+			if (host_session != this.host_session)
+				throw new Error.INVALID_ARGUMENT ("Invalid host session");
+
+			return this.host_session.link_service_session (id);
+		}
+
+		public void unlink_service_session (HostSession host_session, ServiceSessionId id) {
+			if (host_session != this.host_session)
+				return;
+
+			this.host_session.unlink_service_session (id);
+		}
+
 		private void on_agent_session_detached (AgentSessionId id, SessionDetachReason reason, CrashInfo crash) {
 			agent_session_detached (id, reason, crash);
 		}
 
-		public async IOStream open_channel (string address, Cancellable? cancellable = null) throws Error, IOError {
-			if (address.has_prefix ("tcp:")) {
-				ulong raw_port;
-				if (!ulong.try_parse (address.substring (4), out raw_port) || raw_port == 0 || raw_port > uint16.MAX)
-					throw new Error.INVALID_ARGUMENT ("Invalid TCP port");
-				uint16 port = (uint16) raw_port;
-
-				if (device_details.connection_type == USB) {
-					Fruity.UsbmuxClient client = null;
-					try {
-						client = yield Fruity.UsbmuxClient.open (cancellable);
-
-						yield client.connect_to_port (device_details.id, port, cancellable);
-
-						return client.connection;
-					} catch (GLib.Error e) {
-						if (client != null)
-							client.close.begin ();
-
-						if (e is Fruity.UsbmuxError.CONNECTION_REFUSED)
-							throw new Error.SERVER_NOT_RUNNING ("%s", e.message);
-
-						throw new Error.TRANSPORT ("%s", e.message);
-					}
-				} else {
-					try {
-						InetSocketAddress device_address = device_details.network_address;
-						var target_address = (InetSocketAddress) Object.new (typeof (InetSocketAddress),
-							address: device_address.address,
-							port: port,
-							flowinfo: device_address.flowinfo,
-							scope_id: device_address.scope_id
-						);
-
-						var client = new SocketClient ();
-						var connection = yield client.connect_async (target_address, cancellable);
-
-						Tcp.enable_nodelay (connection.socket);
-
-						return connection;
-					} catch (GLib.Error e) {
-						if (e is IOError.CONNECTION_REFUSED)
-							throw new Error.SERVER_NOT_RUNNING ("%s", e.message);
-
-						throw new Error.TRANSPORT ("%s", e.message);
-					}
-				}
-			}
-
-			if (address.has_prefix ("lockdown:")) {
-				string service_name = address.substring (9);
-
-				if (service_name.length != 0) {
-					var client = yield get_lockdown_client (cancellable);
-
-					try {
-						return yield client.start_service (service_name, cancellable);
-					} catch (GLib.Error e) {
-						if (e is Fruity.LockdownError.INVALID_SERVICE)
-							throw new Error.NOT_SUPPORTED ("%s", e.message);
-						throw new Error.TRANSPORT ("%s", e.message);
-					}
-				} else {
-					try {
-						var client = yield Fruity.LockdownClient.open (device_details, cancellable);
-						yield client.start_session (cancellable);
-						return client.stream;
-					} catch (GLib.Error e) {
-						throw new Error.NOT_SUPPORTED ("%s", e.message);
-					}
-				}
-			}
-
-			throw new Error.NOT_SUPPORTED ("Unsupported channel address");
-		}
-
-		private async Fruity.LockdownClient get_lockdown_client (Cancellable? cancellable) throws Error, IOError {
-			if (lockdown_client_timer != null) {
-				if (lockdown_client_timer.elapsed () > MAX_LOCKDOWN_CLIENT_AGE)
-					on_lockdown_client_closed (lockdown_client_request.future.value);
-				else
-					lockdown_client_timer.start ();
-			}
-
-			while (lockdown_client_request != null) {
-				try {
-					return yield lockdown_client_request.future.wait_async (cancellable);
-				} catch (Error e) {
-					throw e;
-				} catch (IOError e) {
-					cancellable.set_error_if_cancelled ();
-				}
-			}
-			lockdown_client_request = new Promise<Fruity.LockdownClient> ();
-
-			try {
-				var client = yield Fruity.LockdownClient.open (device_details, cancellable);
-				yield client.start_session (cancellable);
-				client.closed.connect (on_lockdown_client_closed);
-
-				lockdown_client_request.resolve (client);
-				lockdown_client_timer = new Timer ();
-
-				return client;
-			} catch (GLib.Error e) {
-				var api_error = new Error.NOT_SUPPORTED ("%s", e.message);
-
-				lockdown_client_request.reject (api_error);
-				lockdown_client_request = null;
-				lockdown_client_timer = null;
-
-				throw_api_error (api_error);
-			}
-		}
-
-		private void on_lockdown_client_closed (Fruity.LockdownClient client) {
-			client.closed.disconnect (on_lockdown_client_closed);
-			lockdown_client_request = null;
-			lockdown_client_timer = null;
+		public async IOStream open_channel (string address, Cancellable? cancellable) throws Error, IOError {
+			return yield device.open_channel (address, cancellable);
 		}
 
 		private async void unpair (Cancellable? cancellable) throws Error, IOError {
 			try {
-				var client = yield Fruity.LockdownClient.open (device_details, cancellable);
+				var client = yield device.get_lockdown_client (cancellable);
 				yield client.unpair (cancellable);
 			} catch (Fruity.LockdownError e) {
 				if (e is Fruity.LockdownError.NOT_PAIRED)
@@ -439,17 +165,8 @@ namespace Frida {
 		}
 	}
 
-	public interface FruityLockdownProvider : Object {
-		public abstract async Fruity.LockdownClient get_lockdown_client (Cancellable? cancellable) throws Error, IOError;
-	}
-
-	public class FruityHostSession : Object, HostSession {
-		public weak ChannelProvider channel_provider {
-			get;
-			construct;
-		}
-
-		public weak FruityLockdownProvider lockdown_provider {
+	public sealed class FruityHostSession : Object, HostSession {
+		public Fruity.Device device {
 			get;
 			construct;
 		}
@@ -468,32 +185,43 @@ namespace Frida {
 		private Gee.HashMap<AgentSessionId?, AgentSessionEntry> agent_sessions =
 			new Gee.HashMap<AgentSessionId?, AgentSessionEntry> (AgentSessionId.hash, AgentSessionId.equal);
 
+		private ChannelRegistry channel_registry = new ChannelRegistry ();
+
+		private ServiceSessionRegistry service_session_registry = new ServiceSessionRegistry ();
+
 		private Cancellable io_cancellable = new Cancellable ();
 
 		private const double MIN_SERVER_CHECK_INTERVAL = 5.0;
 		private const string GADGET_APP_ID = "re.frida.Gadget";
-		private const string DEBUGSERVER_ENDPOINT_MODERN = "com.apple.debugserver.DVTSecureSocketProxy";
+		private const string DEBUGSERVER_ENDPOINT_17PLUS = "com.apple.internal.dt.remote.debugproxy";
+		private const string DEBUGSERVER_ENDPOINT_14PLUS = "com.apple.debugserver.DVTSecureSocketProxy";
 		private const string DEBUGSERVER_ENDPOINT_LEGACY = "com.apple.debugserver?tls=handshake-only";
 		private const string[] DEBUGSERVER_ENDPOINT_CANDIDATES = {
-			DEBUGSERVER_ENDPOINT_MODERN,
+			DEBUGSERVER_ENDPOINT_17PLUS,
+			DEBUGSERVER_ENDPOINT_14PLUS,
 			DEBUGSERVER_ENDPOINT_LEGACY,
 		};
 
-		public FruityHostSession (ChannelProvider channel_provider, FruityLockdownProvider lockdown_provider) {
-			Object (
-				channel_provider: channel_provider,
-				lockdown_provider: lockdown_provider
-			);
+		public FruityHostSession (Fruity.Device device) {
+			Object (device: device);
+		}
+
+		construct {
+			channel_registry.channel_closed.connect (on_channel_closed);
+			service_session_registry.session_closed.connect (on_service_session_closed);
 		}
 
 		public async void close (Cancellable? cancellable) throws IOError {
 			if (remote_server_request != null) {
-				var server = yield try_get_remote_server (cancellable);
-				if (server != null) {
-					try {
-						yield server.connection.close (cancellable);
-					} catch (GLib.Error e) {
+				try {
+					var server = yield try_get_remote_server (cancellable);
+					if (server != null) {
+						try {
+							yield server.connection.close (cancellable);
+						} catch (GLib.Error e) {
+						}
 					}
+				} catch (Error e) {
 				}
 			}
 
@@ -531,7 +259,7 @@ namespace Frida {
 			var parameters = new HashTable<string, Variant> (str_hash, str_equal);
 
 			try {
-				var lockdown = yield lockdown_provider.get_lockdown_client (cancellable);
+				var lockdown = yield device.get_lockdown_client (cancellable);
 				var response = yield lockdown.get_value (null, null, cancellable);
 				Fruity.PlistDict properties = response.get_dict ("Value");
 
@@ -539,11 +267,18 @@ namespace Frida {
 				os["id"] = "ios";
 				os["name"] = properties.get_string ("ProductName");
 				os["version"] = properties.get_string ("ProductVersion");
+				os["build"] = properties.get_string ("BuildVersion");
 				parameters["os"] = os;
 
 				parameters["platform"] = "darwin";
 
 				parameters["arch"] = properties.get_string ("CPUArchitecture").has_prefix ("arm64") ? "arm64" : "arm";
+
+				var hardware = new HashTable<string, Variant> (str_hash, str_equal);
+				hardware["product"] = properties.get_string ("ProductType");
+				hardware["platform"] = properties.get_string ("HardwarePlatform");
+				hardware["model"] = properties.get_string ("HardwareModel");
+				parameters["hardware"] = hardware;
 
 				parameters["access"] = "jailed";
 
@@ -599,15 +334,16 @@ namespace Frida {
 			var opts = FrontmostQueryOptions._deserialize (options);
 			var scope = opts.scope;
 
-			var processes_request = new Promise<Gee.List<Fruity.ProcessInfo>> ();
+			var processes_request = new Promise<Gee.List<Fruity.DeviceInfoService.ProcessInfo>> ();
 			var apps_request = new Promise<Gee.List<Fruity.ApplicationDetails>> ();
 			fetch_processes.begin (processes_request, cancellable);
 			fetch_apps.begin (apps_request, cancellable);
 
-			Gee.List<Fruity.ProcessInfo> processes = yield processes_request.future.wait_async (cancellable);
-			Fruity.ProcessInfo? process = null;
+			Gee.List<Fruity.DeviceInfoService.ProcessInfo> processes =
+				yield processes_request.future.wait_async (cancellable);
+			Fruity.DeviceInfoService.ProcessInfo? process = null;
 			string? app_path = null;
-			foreach (Fruity.ProcessInfo candidate in processes) {
+			foreach (Fruity.DeviceInfoService.ProcessInfo candidate in processes) {
 				if (!candidate.foreground_running)
 					continue;
 
@@ -641,15 +377,10 @@ namespace Frida {
 				add_process_metadata (info.parameters, process);
 
 				if (scope == FULL) {
-					try {
-						var lockdown = yield lockdown_provider.get_lockdown_client (cancellable);
-						var springboard = yield Fruity.SpringboardServicesClient.open (lockdown, cancellable);
+					var springboard = yield Fruity.SpringboardServicesClient.open (device, cancellable);
 
-						Bytes png = yield springboard.get_icon_png_data (identifier);
-						add_app_icons (info.parameters, png);
-					} catch (Fruity.SpringboardServicesError e) {
-						throw new Error.NOT_SUPPORTED ("%s", e.message);
-					}
+					Bytes png = yield springboard.get_icon_png_data (identifier);
+					add_app_icons (info.parameters, png);
 				}
 			}
 
@@ -671,7 +402,7 @@ namespace Frida {
 			var scope = opts.scope;
 
 			var apps_request = new Promise<Gee.List<Fruity.ApplicationDetails>> ();
-			var processes_request = new Promise<Gee.List<Fruity.ProcessInfo>> ();
+			var processes_request = new Promise<Gee.List<Fruity.DeviceInfoService.ProcessInfo>> ();
 			fetch_apps.begin (apps_request, cancellable);
 			fetch_processes.begin (processes_request, cancellable);
 
@@ -680,23 +411,19 @@ namespace Frida {
 
 			Gee.Map<string, Bytes>? icons = null;
 			if (scope == FULL) {
-				try {
-					var lockdown = yield lockdown_provider.get_lockdown_client (cancellable);
-					var springboard = yield Fruity.SpringboardServicesClient.open (lockdown, cancellable);
+				var springboard = yield Fruity.SpringboardServicesClient.open (device, cancellable);
 
-					var app_ids = new Gee.ArrayList<string> ();
-					foreach (var app in apps)
-						app_ids.add (app.identifier);
+				var app_ids = new Gee.ArrayList<string> ();
+				foreach (var app in apps)
+					app_ids.add (app.identifier);
 
-					icons = yield springboard.get_icon_png_data_batch (app_ids.to_array (), cancellable);
-				} catch (Fruity.SpringboardServicesError e) {
-					throw new Error.NOT_SUPPORTED ("%s", e.message);
-				}
+				icons = yield springboard.get_icon_png_data_batch (app_ids.to_array (), cancellable);
 			}
 
-			Gee.List<Fruity.ProcessInfo> processes = yield processes_request.future.wait_async (cancellable);
-			var process_by_app_path = new Gee.HashMap<string, Fruity.ProcessInfo> ();
-			foreach (Fruity.ProcessInfo process in processes) {
+			Gee.List<Fruity.DeviceInfoService.ProcessInfo> processes =
+				yield processes_request.future.wait_async (cancellable);
+			var process_by_app_path = new Gee.HashMap<string, Fruity.DeviceInfoService.ProcessInfo> ();
+			foreach (Fruity.DeviceInfoService.ProcessInfo process in processes) {
 				bool is_main_process;
 				string app_path = compute_app_path_from_executable_path (process.real_app_name, out is_main_process);
 				if (is_main_process)
@@ -707,7 +434,7 @@ namespace Frida {
 
 			foreach (Fruity.ApplicationDetails app in apps) {
 				unowned string identifier = app.identifier;
-				Fruity.ProcessInfo? process = process_by_app_path[app.path];
+				Fruity.DeviceInfoService.ProcessInfo? process = process_by_app_path[app.path];
 
 				var info = HostApplicationInfo (identifier, app.name, (process != null) ? process.pid : 0,
 					make_parameters_dict ());
@@ -753,12 +480,13 @@ namespace Frida {
 			var opts = ProcessQueryOptions._deserialize (options);
 			var scope = opts.scope;
 
-			var processes_request = new Promise<Gee.List<Fruity.ProcessInfo>> ();
+			var processes_request = new Promise<Gee.List<Fruity.DeviceInfoService.ProcessInfo>> ();
 			var apps_request = new Promise<Gee.List<Fruity.ApplicationDetails>> ();
 			fetch_processes.begin (processes_request, cancellable);
 			fetch_apps.begin (apps_request, cancellable);
 
-			Gee.List<Fruity.ProcessInfo> processes = yield processes_request.future.wait_async (cancellable);
+			Gee.List<Fruity.DeviceInfoService.ProcessInfo> processes =
+				yield processes_request.future.wait_async (cancellable);
 			processes = maybe_filter_processes (processes, opts);
 
 			Gee.List<Fruity.ApplicationDetails> apps = yield apps_request.future.wait_async (cancellable);
@@ -770,7 +498,7 @@ namespace Frida {
 			var app_pids = new Gee.ArrayList<uint> ();
 			var app_by_main_pid = new Gee.HashMap<uint, Fruity.ApplicationDetails> ();
 			var app_by_related_pid = new Gee.HashMap<uint, Fruity.ApplicationDetails> ();
-			foreach (Fruity.ProcessInfo process in processes) {
+			foreach (Fruity.DeviceInfoService.ProcessInfo process in processes) {
 				unowned string executable_path = process.real_app_name;
 
 				bool is_main_process;
@@ -794,25 +522,20 @@ namespace Frida {
 			if (scope == FULL) {
 				icon_by_pid = new Gee.HashMap<uint, Bytes> ();
 
-				var lockdown = yield lockdown_provider.get_lockdown_client (cancellable);
-				try {
-					var springboard = yield Fruity.SpringboardServicesClient.open (lockdown, cancellable);
+				var springboard = yield Fruity.SpringboardServicesClient.open (device, cancellable);
 
-					var pngs = yield springboard.get_icon_png_data_batch (app_ids.to_array (), cancellable);
+				var pngs = yield springboard.get_icon_png_data_batch (app_ids.to_array (), cancellable);
 
-					int i = 0;
-					foreach (string app_id in app_ids) {
-						icon_by_pid[app_pids[i]] = pngs[app_id];
-						i++;
-					}
-				} catch (Fruity.SpringboardServicesError e) {
-					throw new Error.NOT_SUPPORTED ("%s", e.message);
+				int i = 0;
+				foreach (string app_id in app_ids) {
+					icon_by_pid[app_pids[i]] = pngs[app_id];
+					i++;
 				}
 			}
 
 			var result = new HostProcessInfo[0];
 
-			foreach (Fruity.ProcessInfo process in processes) {
+			foreach (Fruity.DeviceInfoService.ProcessInfo process in processes) {
 				uint pid = process.pid;
 				if (pid == 0)
 					continue;
@@ -861,31 +584,25 @@ namespace Frida {
 
 		private async void fetch_apps (Promise<Gee.List<Fruity.ApplicationDetails>> promise, Cancellable? cancellable) {
 			try {
-				var lockdown = yield lockdown_provider.get_lockdown_client (cancellable);
-				var installation_proxy = yield Fruity.InstallationProxyClient.open (lockdown, cancellable);
+				var installation_proxy = yield Fruity.InstallationProxyClient.open (device, cancellable);
 
 				var apps = yield installation_proxy.browse (cancellable);
 
 				promise.resolve (apps);
-			} catch (Error e) {
+			} catch (GLib.Error e) {
 				promise.reject (e);
-			} catch (IOError e) {
-				promise.reject (e);
-			} catch (Fruity.InstallationProxyError e) {
-				promise.reject (new Error.NOT_SUPPORTED ("%s", e.message));
 			}
 		}
 
-		private async void fetch_processes (Promise<Gee.List<Fruity.ProcessInfo>> promise, Cancellable? cancellable) {
+		private async void fetch_processes (Promise<Gee.List<Fruity.DeviceInfoService.ProcessInfo>> promise,
+				Cancellable? cancellable) {
 			try {
-				var device_info = yield Fruity.DeviceInfoService.open (channel_provider, cancellable);
+				var device_info = yield Fruity.DeviceInfoService.open (device, cancellable);
 
 				var processes = yield device_info.enumerate_processes (cancellable);
 
 				promise.resolve (processes);
-			} catch (Error e) {
-				promise.reject (e);
-			} catch (IOError e) {
+			} catch (GLib.Error e) {
 				promise.reject (e);
 			}
 		}
@@ -909,18 +626,18 @@ namespace Frida {
 			return filtered_apps;
 		}
 
-		private Gee.List<Fruity.ProcessInfo> maybe_filter_processes (Gee.List<Fruity.ProcessInfo> processes,
-				ProcessQueryOptions options) {
+		private Gee.List<Fruity.DeviceInfoService.ProcessInfo> maybe_filter_processes (
+				Gee.List<Fruity.DeviceInfoService.ProcessInfo> processes, ProcessQueryOptions options) {
 			if (!options.has_selected_pids ())
 				return processes;
 
-			var process_by_pid = new Gee.HashMap<uint, Fruity.ProcessInfo> ();
-			foreach (Fruity.ProcessInfo process in processes)
+			var process_by_pid = new Gee.HashMap<uint, Fruity.DeviceInfoService.ProcessInfo> ();
+			foreach (Fruity.DeviceInfoService.ProcessInfo process in processes)
 				process_by_pid[process.pid] = process;
 
-			var filtered_processes = new Gee.ArrayList<Fruity.ProcessInfo> ();
+			var filtered_processes = new Gee.ArrayList<Fruity.DeviceInfoService.ProcessInfo> ();
 			options.enumerate_selected_pids (pid => {
-				Fruity.ProcessInfo? process = process_by_pid[pid];
+				Fruity.DeviceInfoService.ProcessInfo? process = process_by_pid[pid];
 				if (process != null)
 					filtered_processes.add (process);
 			});
@@ -967,7 +684,7 @@ namespace Frida {
 				parameters["debuggable"] = true;
 		}
 
-		private void add_app_state (HashTable<string, Variant> parameters, Fruity.ProcessInfo process) {
+		private void add_app_state (HashTable<string, Variant> parameters, Fruity.DeviceInfoService.ProcessInfo process) {
 			if (process.foreground_running)
 				parameters["frontmost"] = true;
 		}
@@ -983,7 +700,7 @@ namespace Frida {
 			parameters["icons"] = icons.end ();
 		}
 
-		private void add_process_metadata (HashTable<string, Variant> parameters, Fruity.ProcessInfo? process) {
+		private void add_process_metadata (HashTable<string, Variant> parameters, Fruity.DeviceInfoService.ProcessInfo? process) {
 			DateTime? started = process.start_date;
 			if (started != null)
 				parameters["started"] = started.format_iso8601 ();
@@ -1068,46 +785,43 @@ namespace Frida {
 				gadget_path = gadget_value.get_string ();
 			}
 
-			try {
-				var lockdown = yield lockdown_provider.get_lockdown_client (cancellable);
+			var installation_proxy = yield Fruity.InstallationProxyClient.open (device, cancellable);
 
-				var installation_proxy = yield Fruity.InstallationProxyClient.open (lockdown, cancellable);
+			var query = new Fruity.PlistDict ();
+			var ids = new Fruity.PlistArray ();
+			ids.add_string (program);
+			query.set_array ("BundleIDs", ids);
 
-				var query = new Fruity.PlistDict ();
-				var ids = new Fruity.PlistArray ();
-				ids.add_string (program);
-				query.set_array ("BundleIDs", ids);
+			var matches = yield installation_proxy.lookup (query, cancellable);
+			var app = matches[program];
+			if (app == null)
+				throw new Error.INVALID_ARGUMENT ("Unable to find app with bundle identifier “%s”", program);
 
-				var matches = yield installation_proxy.lookup (query, cancellable);
-				var app = matches[program];
-				if (app == null)
-					throw new Error.INVALID_ARGUMENT ("Unable to find app with bundle identifier “%s”", program);
-
-				string[] argv = { app.path };
-				if (options.has_argv) {
-					var provided_argv = options.argv;
-					var length = provided_argv.length;
-					for (int i = 1; i < length; i++)
-						argv += provided_argv[i];
-				}
-
-				var lldb = yield start_lldb_service (lockdown, cancellable);
-				var process = yield lldb.launch (argv, launch_options, cancellable);
-				if (process.observed_state == ALREADY_RUNNING) {
-					yield lldb.kill (cancellable);
-					yield lldb.close (cancellable);
-
-					lldb = yield start_lldb_service (lockdown, cancellable);
-					process = yield lldb.launch (argv, launch_options, cancellable);
-				}
-
-				var session = new LLDBSession (lldb, process, gadget_path, channel_provider);
-				add_lldb_session (session);
-
-				return process.pid;
-			} catch (Fruity.InstallationProxyError e) {
-				throw new Error.NOT_SUPPORTED ("%s", e.message);
+			string[] argv = { app.path };
+			if (options.has_argv) {
+				var provided_argv = options.argv;
+				var length = provided_argv.length;
+				for (int i = 1; i < length; i++)
+					argv += provided_argv[i];
 			}
+
+			var lldb = yield start_lldb_service (cancellable);
+			var process = yield lldb.launch (argv, launch_options, cancellable);
+			if (process.observed_state == ALREADY_RUNNING) {
+				try {
+					yield lldb.kill (cancellable);
+				} catch (Error e) {
+				}
+				yield lldb.close (cancellable);
+
+				lldb = yield start_lldb_service (cancellable);
+				process = yield lldb.launch (argv, launch_options, cancellable);
+			}
+
+			var session = new LLDBSession (lldb, process, gadget_path, device);
+			add_lldb_session (session);
+
+			return process.pid;
 		}
 
 		public async void input (uint pid, uint8[] data, Cancellable? cancellable) throws Error, IOError {
@@ -1153,15 +867,14 @@ namespace Frida {
 			}
 
 			try {
-				var lockdown = yield lockdown_provider.get_lockdown_client (cancellable);
-				var lldb = yield start_lldb_service (lockdown, cancellable);
+				var lldb = yield start_lldb_service (cancellable);
 				var process = yield lldb.attach_by_pid (pid, cancellable);
 
-				lldb_session = new LLDBSession (lldb, process, null, channel_provider);
+				lldb_session = new LLDBSession (lldb, process, null, device);
 				yield lldb_session.kill (cancellable);
 				yield lldb_session.close (cancellable);
 			} catch (Error e) {
-				var process_control = yield Fruity.ProcessControlService.open (channel_provider, cancellable);
+				var process_control = yield Fruity.ProcessControlService.open (device, cancellable);
 				yield process_control.kill (pid, cancellable);
 			}
 		}
@@ -1188,13 +901,12 @@ namespace Frida {
 			if (pid == 0)
 				throw new Error.NOT_SUPPORTED ("The Frida system session is not available on jailed iOS");
 
-			var lockdown = yield lockdown_provider.get_lockdown_client (cancellable);
-			var lldb = yield start_lldb_service (lockdown, cancellable);
+			var lldb = yield start_lldb_service (cancellable);
 			var process = yield lldb.attach_by_pid (pid, cancellable);
 
 			string? gadget_path = null;
 
-			lldb_session = new LLDBSession (lldb, process, gadget_path, channel_provider);
+			lldb_session = new LLDBSession (lldb, process, gadget_path, device);
 			add_lldb_session (lldb_session);
 
 			var gadget_details = yield lldb_session.query_gadget_details (cancellable);
@@ -1206,14 +918,13 @@ namespace Frida {
 			throw new Error.INVALID_OPERATION ("Only meant to be implemented by services");
 		}
 
-		private async LLDB.Client start_lldb_service (Fruity.LockdownClient lockdown, Cancellable? cancellable)
-				throws Error, IOError {
+		private async LLDB.Client start_lldb_service (Cancellable? cancellable) throws Error, IOError {
 			foreach (unowned string endpoint in DEBUGSERVER_ENDPOINT_CANDIDATES) {
 				try {
-					var lldb_stream = yield lockdown.start_service (endpoint, cancellable);
+					var lldb_stream = yield device.open_lockdown_service (endpoint, cancellable);
 					return yield LLDB.Client.open (lldb_stream, cancellable);
-				} catch (Fruity.LockdownError e) {
-					if (!(e is Fruity.LockdownError.INVALID_SERVICE))
+				} catch (Error e) {
+					if (!(e is Error.NOT_SUPPORTED))
 						throw new Error.NOT_SUPPORTED ("%s", e.message);
 				}
 			}
@@ -1225,7 +936,7 @@ namespace Frida {
 		private async AgentSessionId attach_via_gadget (uint pid, HashTable<string, Variant> options,
 				Fruity.Injector.GadgetDetails gadget_details, Cancellable? cancellable) throws Error, IOError {
 			try {
-				var stream = yield channel_provider.open_channel (
+				var stream = yield device.open_channel (
 					("tcp:%" + uint16.FORMAT_MODIFIER + "u").printf (gadget_details.port),
 					cancellable);
 
@@ -1278,8 +989,8 @@ namespace Frida {
 			var transport_broker = server.transport_broker;
 			if (transport_broker != null) {
 				try {
-					entry.connection = yield establish_direct_connection (transport_broker, remote_session_id,
-						channel_provider, cancellable);
+					entry.connection = yield establish_direct_connection (transport_broker, remote_session_id, server,
+						cancellable);
 				} catch (Error e) {
 					if (e is Error.NOT_SUPPORTED)
 						server.transport_broker = null;
@@ -1306,6 +1017,15 @@ namespace Frida {
 			return session;
 		}
 
+		public void unlink_agent_session (AgentSessionId id) {
+			AgentSessionEntry? entry = agent_sessions[id];
+			if (entry == null || entry.sink_registration_id == 0)
+				return;
+
+			entry.connection.unregister_object (entry.sink_registration_id);
+			entry.sink_registration_id = 0;
+		}
+
 		public async InjectorPayloadId inject_library_file (uint pid, string path, string entrypoint, string data,
 				Cancellable? cancellable) throws Error, IOError {
 			var server = yield get_remote_server (cancellable);
@@ -1324,6 +1044,79 @@ namespace Frida {
 			} catch (GLib.Error e) {
 				throw_dbus_error (e);
 			}
+		}
+
+		public async ChannelId open_channel (string address, Cancellable? cancellable) throws Error, IOError {
+			var stream = yield device.open_channel (address, cancellable);
+
+			var id = ChannelId.generate ();
+			channel_registry.register (id, stream);
+
+			return id;
+		}
+
+		public IOStream link_channel (ChannelId id) throws Error {
+			return channel_registry.link (id);
+		}
+
+		public void unlink_channel (ChannelId id) {
+			channel_registry.unlink (id);
+		}
+
+		private void on_channel_closed (ChannelId id) {
+			channel_closed (id);
+		}
+
+		private void on_service_session_closed (ServiceSessionId id) {
+			service_session_closed (id);
+		}
+
+		public async ServiceSessionId open_service (string address, Cancellable? cancellable) throws Error, IOError {
+			var session = yield do_open_service (address, cancellable);
+
+			var id = ServiceSessionId.generate ();
+			service_session_registry.register (id, session);
+
+			return id;
+		}
+
+		private async ServiceSession do_open_service (string address, Cancellable? cancellable) throws Error, IOError {
+			string[] tokens = address.split (":", 2);
+			unowned string protocol = tokens[0];
+			unowned string service_name = tokens[1];
+
+			if (protocol == "plist") {
+				var stream = yield device.open_lockdown_service (service_name, cancellable);
+
+				return new PlistServiceSession (stream);
+			}
+
+			if (protocol == "dtx") {
+				var connection = yield Fruity.DTXConnection.obtain (device, cancellable);
+
+				return new DTXServiceSession (service_name, connection);
+			}
+
+			if (protocol == "xpc") {
+				var tunnel = yield device.find_tunnel (cancellable);
+				if (tunnel == null)
+					throw new Error.NOT_SUPPORTED ("RemoteXPC not supported by device");
+
+				var service_info = tunnel.discovery.get_service (service_name);
+				var stream = yield tunnel.open_tcp_connection (service_info.port, cancellable);
+
+				return new XpcServiceSession (new Fruity.XpcConnection (stream));
+			}
+
+			throw new Error.NOT_SUPPORTED ("Unsupported service address");
+		}
+
+		public ServiceSession link_service_session (ServiceSessionId id) throws Error {
+			return service_session_registry.link (id);
+		}
+
+		public void unlink_service_session (ServiceSessionId id) {
+			service_session_registry.unlink (id);
 		}
 
 		private void add_lldb_session (LLDBSession session) {
@@ -1362,11 +1155,13 @@ namespace Frida {
 			entry.close.begin (io_cancellable);
 		}
 
-		private async RemoteServer? try_get_remote_server (Cancellable? cancellable) throws IOError {
+		private async RemoteServer? try_get_remote_server (Cancellable? cancellable) throws Error, IOError {
 			try {
 				return yield get_remote_server (cancellable);
 			} catch (Error e) {
-				return null;
+				if (e is Error.SERVER_NOT_RUNNING)
+					return null;
+				throw e;
 			}
 		}
 
@@ -1392,10 +1187,9 @@ namespace Frida {
 
 			DBusConnection? connection = null;
 			try {
-				var stream = yield channel_provider.open_channel (
-					("tcp:%" + uint16.FORMAT_MODIFIER + "u").printf (DEFAULT_CONTROL_PORT),
-					cancellable);
+				var channel = yield connect_to_remote_server (cancellable);
 
+				IOStream stream = channel.stream;
 				WebServiceTransport transport = PLAIN;
 				string? origin = null;
 
@@ -1423,7 +1217,7 @@ namespace Frida {
 				if (connection.closed)
 					throw new Error.SERVER_NOT_RUNNING ("Unable to connect to remote frida-server");
 
-				var server = new RemoteServer (session, connection, flavor, transport_broker);
+				var server = new RemoteServer (flavor, session, connection, channel, device, transport_broker);
 				attach_remote_server (server);
 				current_remote_server = server;
 				last_server_check_timer = null;
@@ -1441,8 +1235,8 @@ namespace Frida {
 					last_server_check_timer = null;
 					last_server_check_error = null;
 				} else {
-					if (e is Error.SERVER_NOT_RUNNING) {
-						api_error = new Error.SERVER_NOT_RUNNING ("Unable to connect to remote frida-server");
+					if (e is Error) {
+						api_error = e;
 					} else if (connection != null) {
 						api_error = new Error.PROTOCOL ("Incompatible frida-server version");
 					} else {
@@ -1458,6 +1252,51 @@ namespace Frida {
 
 				throw_api_error (api_error);
 			}
+		}
+
+		private async Fruity.TcpChannel connect_to_remote_server (Cancellable? cancellable) throws Error, IOError {
+			var tunnel = yield device.find_tunnel (cancellable);
+			bool tunnel_recently_opened = tunnel != null && get_monotonic_time () - tunnel.opened_at < 1000000;
+
+			uint delays[] = { 0, 50, 250 };
+			uint max_attempts = tunnel_recently_opened ? delays.length : 1;
+			var main_context = MainContext.ref_thread_default ();
+
+			Error? pending_error = null;
+			for (uint attempts = 0; attempts != max_attempts; attempts++) {
+				uint delay = delays[attempts];
+				if (delay != 0) {
+					var timeout_source = new TimeoutSource (delay);
+					timeout_source.set_callback (connect_to_remote_server.callback);
+					timeout_source.attach (main_context);
+
+					var cancel_source = new CancellableSource (cancellable);
+					cancel_source.set_callback (connect_to_remote_server.callback);
+					cancel_source.attach (main_context);
+
+					yield;
+
+					cancel_source.destroy ();
+					timeout_source.destroy ();
+
+					if (cancellable.is_cancelled ())
+						break;
+				}
+
+				bool is_last_attempt = attempts == max_attempts - 1;
+				var open_flags = is_last_attempt
+					? Fruity.OpenTcpChannelFlags.ALLOW_ANY_TRANSPORT
+					: Fruity.OpenTcpChannelFlags.ALLOW_TUNNEL;
+
+				try {
+					return yield device.open_tcp_channel (DEFAULT_CONTROL_PORT.to_string (), open_flags, cancellable);
+				} catch (Error e) {
+					pending_error = e;
+					if (!(e is Error.SERVER_NOT_RUNNING))
+						break;
+				}
+			}
+			throw pending_error;
 		}
 
 		private void attach_remote_server (RemoteServer server) {
@@ -1556,14 +1395,15 @@ namespace Frida {
 				construct;
 			}
 
-			public weak ChannelProvider channel_provider {
+			public weak HostChannelProvider channel_provider {
 				get;
 				construct;
 			}
 
 			private Promise<Fruity.Injector.GadgetDetails>? gadget_request;
 
-			public LLDBSession (LLDB.Client lldb, LLDB.Process process, string? gadget_path, ChannelProvider channel_provider) {
+			public LLDBSession (LLDB.Client lldb, LLDB.Process process, string? gadget_path,
+					HostChannelProvider channel_provider) {
 				Object (
 					lldb: lldb,
 					process: process,
@@ -1754,7 +1594,12 @@ namespace Frida {
 			}
 		}
 
-		private class RemoteServer : Object {
+		private class RemoteServer : Object, HostChannelProvider {
+			public Flavor flavor {
+				get;
+				construct;
+			}
+
 			public HostSession session {
 				get;
 				construct;
@@ -1765,7 +1610,12 @@ namespace Frida {
 				construct;
 			}
 
-			public Flavor flavor {
+			public Fruity.TcpChannel channel {
+				get;
+				construct;
+			}
+
+			public Fruity.Device device {
 				get;
 				construct;
 			}
@@ -1780,14 +1630,690 @@ namespace Frida {
 				set;
 			}
 
-			public RemoteServer (HostSession session, DBusConnection connection, Flavor flavor,
-					TransportBroker? transport_broker) {
+			public RemoteServer (Flavor flavor, HostSession session, DBusConnection connection, Fruity.TcpChannel channel,
+					Fruity.Device device, TransportBroker? transport_broker) {
 				Object (
+					flavor: flavor,
 					session: session,
 					connection: connection,
-					flavor: flavor,
+					channel: channel,
+					device: device,
 					transport_broker: transport_broker
 				);
+			}
+
+			public async IOStream open_channel (string address, Cancellable? cancellable) throws Error, IOError {
+				if (!address.has_prefix ("tcp:"))
+					throw new Error.NOT_SUPPORTED ("Unsupported channel address");
+				var flags = (channel.kind == TUNNEL)
+					? Fruity.OpenTcpChannelFlags.ALLOW_TUNNEL
+					: Fruity.OpenTcpChannelFlags.ALLOW_USBMUX;
+				var channel = yield device.open_tcp_channel (address[4:], flags, cancellable);
+				return channel.stream;
+			}
+		}
+	}
+
+	private sealed class PlistServiceSession : Object, ServiceSession {
+		public IOStream stream {
+			get;
+			construct;
+		}
+
+		private Fruity.PlistServiceClient client;
+		private bool client_closed = false;
+
+		public PlistServiceSession (IOStream stream) {
+			Object (stream: stream);
+		}
+
+		construct {
+			client = new Fruity.PlistServiceClient (stream);
+			client.closed.connect (on_client_closed);
+		}
+
+		~PlistServiceSession () {
+			client.closed.disconnect (on_client_closed);
+		}
+
+		public async void activate (Cancellable? cancellable) throws Error, IOError {
+			ensure_active ();
+		}
+
+		private void ensure_active () throws Error {
+			if (client_closed)
+				throw new Error.INVALID_OPERATION ("Service is closed");
+		}
+
+		public async void cancel (Cancellable? cancellable) throws IOError {
+			if (client_closed)
+				return;
+			client_closed = true;
+
+			yield client.close (cancellable);
+
+			close ();
+		}
+
+		public async Variant request (Variant parameters, Cancellable? cancellable = null) throws Error, IOError {
+			ensure_active ();
+
+			var reader = new VariantReader (parameters);
+
+			string type = reader.read_member ("type").get_string_value ();
+			reader.end_member ();
+
+			try {
+				if (type == "query") {
+					reader.read_member ("payload");
+					var payload = plist_from_variant (reader.current_object);
+					var raw_response = yield client.query (payload, cancellable);
+					return plist_to_variant (raw_response);
+				} else if (type == "read") {
+					var plist = yield client.read_message (cancellable);
+					return plist_to_variant (plist);
+				} else {
+					throw new Error.INVALID_ARGUMENT ("Unsupported request type: %s", type);
+				}
+			} catch (Fruity.PlistServiceError e) {
+				if (e is Fruity.PlistServiceError.CONNECTION_CLOSED)
+					throw new Error.TRANSPORT ("Connection closed during request");
+				throw new Error.PROTOCOL ("%s", e.message);
+			}
+		}
+
+		private void on_client_closed () {
+			client_closed = true;
+			close ();
+		}
+
+		private Fruity.Plist plist_from_variant (Variant val) throws Error {
+			if (!val.is_of_type (VariantType.VARDICT))
+				throw new Error.INVALID_ARGUMENT ("Expected a dictionary");
+
+			var plist = new Fruity.Plist ();
+
+			foreach (var item in val) {
+				string k;
+				Variant v;
+				item.get ("{sv}", out k, out v);
+
+				plist.set_value (k, plist_value_from_variant (v));
+			}
+
+			return plist;
+		}
+
+		private Value plist_value_from_variant (Variant val) throws Error {
+			switch (val.classify ()) {
+				case BOOLEAN:
+					return val.get_boolean ();
+				case INT64:
+					return val.get_int64 ();
+				case DOUBLE:
+					return val.get_double ();
+				case STRING:
+					return val.get_string ();
+				case ARRAY:
+					if (val.is_of_type (new VariantType ("ay")))
+						return val.get_data_as_bytes ();
+
+					if (val.is_of_type (VariantType.VARDICT)) {
+						var dict = new Fruity.PlistDict ();
+
+						foreach (var item in val) {
+							string k;
+							Variant v;
+							item.get ("{sv}", out k, out v);
+
+							dict.set_value (k, plist_value_from_variant (v));
+						}
+
+						return dict;
+					}
+
+					if (val.is_of_type (new VariantType ("av"))) {
+						var arr = new Fruity.PlistArray ();
+
+						foreach (var item in val) {
+							Variant v;
+							item.get ("v", out v);
+
+							arr.add_value (plist_value_from_variant (v));
+						}
+
+						return arr;
+					}
+
+					break;
+				default:
+					break;
+			}
+
+			throw new Error.INVALID_ARGUMENT ("Unsupported type: %s", (string) val.get_type ().peek_string ());
+		}
+
+		private Variant plist_to_variant (Fruity.Plist plist) {
+			return plist_dict_to_variant (plist);
+		}
+
+		private Variant plist_dict_to_variant (Fruity.PlistDict dict) {
+			var builder = new VariantBuilder (VariantType.VARDICT);
+			foreach (var e in dict.entries)
+				builder.add ("{sv}", e.key, plist_value_to_variant (e.value));
+			return builder.end ();
+		}
+
+		private Variant plist_array_to_variant (Fruity.PlistArray arr) {
+			var builder = new VariantBuilder (new VariantType.array (VariantType.VARIANT));
+			foreach (var e in arr.elements)
+				builder.add ("v", plist_value_to_variant (e));
+			return builder.end ();
+		}
+
+		private Variant plist_value_to_variant (Value * v) {
+			Type t = v.type ();
+
+			if (t == typeof (bool))
+				return v.get_boolean ();
+
+			if (t == typeof (int64))
+				return v.get_int64 ();
+
+			if (t == typeof (float))
+				return (double) v.get_float ();
+
+			if (t == typeof (double))
+				return v.get_double ();
+
+			if (t == typeof (string))
+				return v.get_string ();
+
+			if (t == typeof (Bytes)) {
+				var bytes = (Bytes) v.get_boxed ();
+				return Variant.new_from_data (new VariantType.array (VariantType.BYTE), bytes.get_data (), true, bytes);
+			}
+
+			if (t == typeof (Fruity.PlistDict))
+				return plist_dict_to_variant ((Fruity.PlistDict) v.get_object ());
+
+			if (t == typeof (Fruity.PlistArray))
+				return plist_array_to_variant ((Fruity.PlistArray) v.get_object ());
+
+			if (t == typeof (Fruity.PlistUid))
+				return ((Fruity.PlistUid) v.get_object ()).uid;
+
+			assert_not_reached ();
+		}
+	}
+
+	private sealed class DTXServiceSession : Object, ServiceSession {
+		public string identifier {
+			get;
+			construct;
+		}
+
+		public Fruity.DTXConnection connection {
+			get;
+			construct;
+		}
+
+		private State state = INACTIVE;
+		private bool connection_closed = false;
+		private Fruity.DTXChannel? channel;
+
+		private enum State {
+			INACTIVE,
+			ACTIVE,
+		}
+
+		public DTXServiceSession (string identifier, Fruity.DTXConnection connection) {
+			Object (identifier: identifier, connection: connection);
+		}
+
+		construct {
+			connection.notify["state"].connect (on_connection_state_changed);
+		}
+
+		~DTXServiceSession () {
+			connection.notify["state"].disconnect (on_connection_state_changed);
+		}
+
+		public async void activate (Cancellable? cancellable) throws Error, IOError {
+			ensure_active ();
+		}
+
+		private void ensure_active () throws Error {
+			if (connection_closed)
+				throw new Error.INVALID_OPERATION ("Service is closed");
+
+			if (state == INACTIVE) {
+				state = ACTIVE;
+
+				channel = connection.make_channel (identifier);
+				channel.invocation.connect (on_channel_invocation);
+				channel.notification.connect (on_channel_notification);
+			}
+		}
+
+		private void ensure_closed () {
+			if (connection_closed)
+				return;
+			connection_closed = true;
+
+			if (channel != null) {
+				channel.invocation.disconnect (on_channel_invocation);
+				channel.notification.disconnect (on_channel_notification);
+				channel = null;
+			}
+
+			close ();
+		}
+
+		public async void cancel (Cancellable? cancellable) throws IOError {
+			ensure_closed ();
+		}
+
+		public async Variant request (Variant parameters, Cancellable? cancellable = null) throws Error, IOError {
+			ensure_active ();
+
+			var reader = new VariantReader (parameters);
+
+			string method_name = reader.read_member ("method").get_string_value ();
+			reader.end_member ();
+
+			Fruity.DTXArgumentListBuilder? args = null;
+			if (reader.has_member ("args")) {
+				reader.read_member ("args");
+				args = new Fruity.DTXArgumentListBuilder ();
+				uint n = reader.count_elements ();
+				for (uint i = 0; i != n; i++) {
+					reader.read_element (i);
+					args.append_object (nsobject_from_variant (reader.current_object));
+					reader.end_element ();
+				}
+			}
+
+			var result = yield channel.invoke (method_name, args, cancellable);
+
+			return nsobject_to_variant (result);
+		}
+
+		private void on_connection_state_changed (Object obj, ParamSpec pspec) {
+			if (connection.state == CLOSED)
+				ensure_closed ();
+		}
+
+		private void on_channel_invocation (string method_name, Fruity.DTXArgumentList args,
+				Fruity.DTXMessageTransportFlags transport_flags) {
+			var envelope = new HashTable<string, Variant> (str_hash, str_equal);
+			envelope["type"] = "invocation";
+			envelope["payload"] = invocation_to_variant (method_name, args);
+			envelope["expects-reply"] = (transport_flags & Fruity.DTXMessageTransportFlags.EXPECTS_REPLY) != 0;
+			message (envelope);
+		}
+
+		private void on_channel_notification (Fruity.NSObject obj) {
+			var envelope = new HashTable<string, Variant> (str_hash, str_equal);
+			envelope["type"] = "notification";
+			envelope["payload"] = nsobject_to_variant (obj);
+			message (envelope);
+		}
+
+		private Fruity.NSObject? nsobject_from_variant (Variant val) throws Error {
+			switch (val.classify ()) {
+				case BOOLEAN:
+					return new Fruity.NSNumber.from_boolean (val.get_boolean ());
+				case INT64:
+					return new Fruity.NSNumber.from_integer (val.get_int64 ());
+				case DOUBLE:
+					return new Fruity.NSNumber.from_double (val.get_double ());
+				case STRING:
+					return new Fruity.NSString (val.get_string ());
+				case ARRAY:
+					if (val.is_of_type (new VariantType ("ay")))
+						return new Fruity.NSData (val.get_data_as_bytes ());
+
+					if (val.is_of_type (VariantType.VARDICT)) {
+						var dict = new Fruity.NSDictionary ();
+
+						foreach (var item in val) {
+							string k;
+							Variant v;
+							item.get ("{sv}", out k, out v);
+
+							dict.set_value (k, nsobject_from_variant (v));
+						}
+
+						return dict;
+					}
+
+					if (val.is_of_type (new VariantType ("av"))) {
+						var arr = new Fruity.NSArray ();
+
+						foreach (var item in val) {
+							Variant v;
+							item.get ("v", out v);
+
+							arr.add_object (nsobject_from_variant (v));
+						}
+
+						return arr;
+					}
+
+					break;
+				default:
+					break;
+			}
+
+			throw new Error.INVALID_ARGUMENT ("Unsupported type: %s", (string) val.get_type ().peek_string ());
+		}
+
+		private Variant nsobject_to_variant (Fruity.NSObject? obj) {
+			if (obj == null)
+				return new Variant ("()");
+
+			var num = obj as Fruity.NSNumber;
+			if (num != null)
+				return num.integer;
+
+			var str = obj as Fruity.NSString;
+			if (str != null)
+				return str.str;
+
+			var data = obj as Fruity.NSData;
+			if (data != null) {
+				Bytes bytes = data.bytes;
+				return Variant.new_from_data (new VariantType.array (VariantType.BYTE), bytes.get_data (), true, bytes);
+			}
+
+			var dict = obj as Fruity.NSDictionary;
+			if (dict != null)
+				return nsdictionary_to_variant (dict);
+
+			var dict_raw = obj as Fruity.NSDictionaryRaw;
+			if (dict_raw != null)
+				return nsdictionary_raw_to_variant (dict_raw);
+
+			var arr = obj as Fruity.NSArray;
+			if (arr != null)
+				return nsarray_to_variant (arr);
+
+			var date = obj as Fruity.NSDate;
+			if (date != null)
+				return date.to_date_time ().format_iso8601 ();
+
+			var err = obj as Fruity.NSError;
+			if (err != null)
+				return nserror_to_variant (err);
+
+			var msg = obj as Fruity.DTTapMessage;
+			if (msg != null)
+				return nsdictionary_to_variant (msg.plist);
+
+			assert_not_reached ();
+		}
+
+		private Variant nsdictionary_to_variant (Fruity.NSDictionary dict) {
+			var builder = new VariantBuilder (VariantType.VARDICT);
+			foreach (var e in dict.entries)
+				builder.add ("{sv}", e.key, nsobject_to_variant (e.value));
+			return builder.end ();
+		}
+
+		private Variant nsdictionary_raw_to_variant (Fruity.NSDictionaryRaw dict) {
+			var builder = new VariantBuilder (
+				new VariantType.array (new VariantType.dict_entry (VariantType.VARIANT, VariantType.VARIANT)));
+			foreach (var e in dict.entries)
+				builder.add ("{vv}", nsobject_to_variant (e.key), nsobject_to_variant (e.value));
+			return builder.end ();
+		}
+
+		private Variant nsarray_to_variant (Fruity.NSArray arr) {
+			var builder = new VariantBuilder (new VariantType.array (VariantType.VARIANT));
+			foreach (var e in arr.elements)
+				builder.add ("v", nsobject_to_variant (e));
+			return builder.end ();
+		}
+
+		private Variant nserror_to_variant (Fruity.NSError e) {
+			var result = new HashTable<string, Variant> (str_hash, str_equal);
+			result["domain"] = e.domain.str;
+			result["code"] = e.code;
+			result["user-info"] = nsdictionary_to_variant (e.user_info);
+			return result;
+		}
+
+		private Variant invocation_to_variant (string method_name, Fruity.DTXArgumentList args) {
+			var invocation = new HashTable<string, Variant> (str_hash, str_equal);
+			invocation["method"] = method_name;
+			invocation["args"] = invocation_args_to_variant (args);
+			return invocation;
+		}
+
+		private Variant invocation_args_to_variant (Fruity.DTXArgumentList args) {
+			var builder = new VariantBuilder (new VariantType.array (VariantType.VARIANT));
+			foreach (var e in args.elements)
+				builder.add ("v", value_to_variant (e));
+			return builder.end ();
+		}
+
+		private Variant value_to_variant (Value v) {
+			Type t = v.type ();
+
+			if (t == typeof (int))
+				return v.get_int ();
+
+			if (t == typeof (int64))
+				return v.get_int64 ();
+
+			if (t == typeof (double))
+				return v.get_double ();
+
+			if (t == typeof (string))
+				return v.get_string ();
+
+			if (t.is_a (typeof (Fruity.NSObject)))
+				return nsobject_to_variant ((Fruity.NSObject) v.get_boxed ());
+
+			assert_not_reached ();
+		}
+	}
+
+	private sealed class XpcServiceSession : Object, ServiceSession {
+		public Fruity.XpcConnection connection {
+			get;
+			construct;
+		}
+
+		private State state = INACTIVE;
+		private bool connection_closed = false;
+
+		private enum State {
+			INACTIVE,
+			ACTIVE,
+		}
+
+		public XpcServiceSession (Fruity.XpcConnection connection) {
+			Object (connection: connection);
+		}
+
+		construct {
+			connection.close.connect (on_close);
+			connection.message.connect (on_message);
+		}
+
+		~XpcServiceSession () {
+			connection.close.disconnect (on_close);
+			connection.message.disconnect (on_message);
+
+			connection.cancel ();
+		}
+
+		public async void activate (Cancellable? cancellable) throws Error, IOError {
+			ensure_active ();
+		}
+
+		private void ensure_active () throws Error {
+			if (connection_closed)
+				throw new Error.INVALID_OPERATION ("Service is closed");
+
+			if (state == INACTIVE) {
+				state = ACTIVE;
+
+				connection.activate ();
+			}
+		}
+
+		public async void cancel (Cancellable? cancellable) throws IOError {
+			if (state == ACTIVE)
+				connection.cancel ();
+			else if (!connection_closed)
+				on_close (null);
+		}
+
+		public async Variant request (Variant parameters, Cancellable? cancellable = null) throws Error, IOError {
+			ensure_active ();
+
+			yield connection.wait_until_ready (cancellable);
+
+			if (!parameters.is_of_type (VariantType.VARDICT))
+				throw new Error.INVALID_ARGUMENT ("Expected a dictionary");
+
+			var builder = new Fruity.XpcBodyBuilder ();
+			builder.begin_dictionary ();
+			add_vardict_values (parameters, builder);
+			Fruity.TrustedService.add_standard_request_values (builder);
+			builder.end_dictionary ();
+
+			Fruity.XpcMessage response = yield connection.request (builder.build (), cancellable);
+
+			return response.body;
+		}
+
+		private void on_close (Error? error) {
+			connection_closed = true;
+
+			close ();
+		}
+
+		private void on_message (Fruity.XpcMessage msg) {
+			message (msg.body);
+		}
+
+		private static void add_vardict_values (Variant dict, Fruity.XpcBodyBuilder builder) throws Error {
+			foreach (var item in dict) {
+				string key;
+				Variant val;
+				item.get ("{sv}", out key, out val);
+
+				builder.set_member_name (key);
+				add_variant_value (val, builder);
+			}
+		}
+
+		private static void add_vararray_values (Variant arr, Fruity.XpcBodyBuilder builder) throws Error {
+			foreach (var item in arr) {
+				Variant val;
+				item.get ("v", out val);
+
+				add_variant_value (val, builder);
+			}
+		}
+
+		private static void add_variant_value (Variant val, Fruity.XpcBodyBuilder builder) throws Error {
+			switch (val.classify ()) {
+				case BOOLEAN:
+					builder.add_bool_value (val.get_boolean ());
+					return;
+				case INT64:
+					builder.add_int64_value (val.get_int64 ());
+					return;
+				case STRING:
+					builder.add_string_value (val.get_string ());
+					return;
+				case ARRAY:
+					if (val.is_of_type (new VariantType ("ay"))) {
+						builder.add_data_value (val.get_data_as_bytes ());
+						return;
+					}
+
+					if (val.is_of_type (VariantType.VARDICT)) {
+						builder.begin_dictionary ();
+						add_vardict_values (val, builder);
+						builder.end_dictionary ();
+						return;
+					}
+
+					if (val.is_of_type (new VariantType ("av"))) {
+						builder.begin_array ();
+						add_vararray_values (val, builder);
+						builder.end_array ();
+						return;
+					}
+
+					break;
+				case TUPLE:
+					if (val.n_children () != 2) {
+						throw new Error.INVALID_ARGUMENT ("Invalid type annotation: %s",
+							(string) val.get_type ().peek_string ());
+					}
+
+					var type = val.get_child_value (0);
+					if (!type.is_of_type (VariantType.STRING)) {
+						throw new Error.INVALID_ARGUMENT ("Invalid type annotation: %s",
+							(string) val.get_type ().peek_string ());
+					}
+					unowned string type_str = type.get_string ();
+
+					add_variant_value_of_type (val.get_child_value (1), type_str, builder);
+					return;
+				default:
+					break;
+			}
+
+			throw new Error.INVALID_ARGUMENT ("Unsupported type: %s", (string) val.get_type ().peek_string ());
+		}
+
+		private static void add_variant_value_of_type (Variant val, string type, Fruity.XpcBodyBuilder builder) throws Error {
+			switch (type) {
+				case "bool":
+					check_type (val, VariantType.BOOLEAN);
+					builder.add_bool_value (val.get_boolean ());
+					break;
+				case "int64":
+					check_type (val, VariantType.INT64);
+					builder.add_int64_value (val.get_int64 ());
+					break;
+				case "uint64":
+					check_type (val, VariantType.UINT64);
+					builder.add_uint64_value (val.get_uint64 ());
+					break;
+				case "data":
+					check_type (val, new VariantType ("ay"));
+					builder.add_data_value (val.get_data_as_bytes ());
+					break;
+				case "string":
+					check_type (val, VariantType.STRING);
+					builder.add_string_value (val.get_string ());
+					break;
+				case "uuid":
+					check_type (val, new VariantType ("ay"));
+					if (val.get_size () != 16)
+						throw new Error.INVALID_ARGUMENT ("Invalid UUID");
+					unowned uint8[] data = (uint8[]) val.get_data ();
+					builder.add_uuid_value (data[:16]);
+					break;
+				default:
+					throw new Error.INVALID_ARGUMENT ("Unsupported type: %s", type);
+			}
+		}
+
+		private static void check_type (Variant v, VariantType t) throws Error {
+			if (!v.is_of_type (t)) {
+				throw new Error.INVALID_ARGUMENT ("Invalid %s: %s",
+					(string) t.peek_string (),
+					(string) v.get_type ().peek_string ());
 			}
 		}
 	}

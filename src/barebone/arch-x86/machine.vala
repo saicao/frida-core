@@ -1,6 +1,6 @@
 [CCode (gir_namespace = "FridaBarebone", gir_version = "1.0")]
 namespace Frida.Barebone {
-	public class IA32Machine : Object, Machine {
+	public sealed class IA32Machine : Object, Machine {
 		public override GDB.Client gdb {
 			get;
 			set;
@@ -32,6 +32,11 @@ namespace Frida.Barebone {
 			throw_not_supported ();
 		}
 
+		public async void protect_pages (uint64 virtual_address, size_t size, Gum.PageProtection prot,
+				Cancellable? cancellable) throws Error, IOError {
+			throw_not_supported ();
+		}
+
 		public async Gee.List<uint64?> scan_ranges (Gee.List<Gum.MemoryRange?> ranges, MatchPattern pattern, uint max_matches,
 				Cancellable? cancellable) throws Error, IOError {
 			throw_not_supported ();
@@ -41,8 +46,7 @@ namespace Frida.Barebone {
 			throw_not_supported ();
 		}
 
-		public async uint64 invoke (uint64 impl, uint64[] args, uint64 landing_zone, Cancellable? cancellable)
-				throws Error, IOError {
+		public async uint64 invoke (uint64 impl, uint64[] args, Cancellable? cancellable) throws Error, IOError {
 			throw_not_supported ();
 		}
 

@@ -8,12 +8,13 @@ namespace Frida {
 	public enum Machine {
 		ANY,
 		X86,
-		X64,
+		X86_64,
 		ARM,
-		ARM64
+		ARM64,
+		MIPS,
 	}
 
-	public class ResourceCompiler {
+	public sealed class ResourceCompiler {
 		private static Toolchain toolchain;
 		private static Machine machine;
 		private static string toolchain_name;
@@ -31,8 +32,6 @@ namespace Frida {
 			{ "", 0, 0, OptionArg.FILENAME_ARRAY, ref input_filenames, null, "FILE..." },
 			{ null }
 		};
-
-		private const char NIBBLE_TO_HEX_CHAR[16] = { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f' };
 
 		public static int main (string[] args) {
 #if WINDOWS
@@ -67,36 +66,40 @@ namespace Frida {
 						toolchain = Toolchain.GNU;
 						break;
 					default:
-						stderr.printf ("Invalid toolchain. Please specify either `microsoft`, `apple` or `gnu`.\n");
+						stderr.printf ("Invalid toolchain. Specify either `microsoft`, `apple` or `gnu`.\n");
 						return 1;
 				}
 			}
 
 			if (machine_name != null) {
-				switch (machine_name) {
+				switch (machine_name.down ()) {
 					case "any":
 						machine = Machine.ANY;
 						break;
 					case "x86":
 						machine = Machine.X86;
 						break;
+					case "x86_64":
 					case "x64":
-						machine = Machine.X64;
+						machine = Machine.X86_64;
 						break;
-					case "ARM":
+					case "arm":
 						machine = Machine.ARM;
 						break;
-					case "ARM64":
+					case "arm64":
 						machine = Machine.ARM64;
 						break;
+					case "mips":
+						machine = Machine.MIPS;
+						break;
 					default:
-						stderr.printf ("Invalid machine. Please specify either `any`, `x86`, `x64`, `ARM` or `ARM64`.\n");
+						stderr.printf ("Invalid machine. Must be one of: any, x86, x86_64, x64, arm, arm64, or mips.\n");
 						return 1;
 				}
 			}
 
 			if (toolchain == Toolchain.MICROSOFT && machine == Machine.ANY) {
-				stderr.printf ("Machine must be specified. Please specify either `-m x86`, `-m x64`, `-m ARM` or `-m ARM64`.\n");
+				stderr.printf ("Machine must be specified.\n");
 				return 1;
 			}
 
@@ -376,7 +379,7 @@ namespace Frida {
 
 						asource.put_string (".globl FRIDA_CSYM (" + blob_identifier + ")\n");
 						asource.put_string ("FRIDA_CSYM (" + blob_identifier + "):\n");
-						asource.put_string (".incbin \"" + prepared_resource.file.get_path () + "\"\n");
+						asource.put_string (".incbin " + quote (prepared_resource.file.get_path ()) + "\n");
 
 						if (!is_dylib)
 							asource.put_string (".byte 0\n");
@@ -540,6 +543,13 @@ namespace Frida {
 			return builder.str;
 		}
 
+		private static string quote (string path) {
+			string lit = path
+				.replace ("\\", "\\\\")
+				.replace ("\"", "\\\"");
+			return "\"" + lit + "\"";
+		}
+
 		private static void compress_file (owned CompressRequest request) {
 			try {
 				InputStream input_stream = request.input_stream;
@@ -674,12 +684,13 @@ namespace Frida {
 	}
 
 	namespace MSVC {
-		public class ObjWriter {
+		public sealed class ObjWriter {
 			private const uint16 IMAGE_FILE_MACHINE_I386 = 0x14c;
 			private const uint16 IMAGE_FILE_MACHINE_AMD64 = 0x8664;
 			private const uint16 IMAGE_FILE_MACHINE_ARM = 0x1c0;
 			private const uint16 IMAGE_FILE_MACHINE_ARMNT = 0x1c4;
 			private const uint16 IMAGE_FILE_MACHINE_ARM64 = 0xaa64;
+			private const uint16 IMAGE_FILE_MACHINE_MIPS16 = 0x266;
 
 			private const uint32 IMAGE_SCN_CNT_INITIALIZED_DATA = 0x00000040;
 			private const uint32 IMAGE_SCN_LNK_INFO = 0x00000200;
@@ -762,7 +773,7 @@ namespace Frida {
 					case Machine.X86:
 						file_header.machine = IMAGE_FILE_MACHINE_I386;
 						break;
-					case Machine.X64:
+					case Machine.X86_64:
 						file_header.machine = IMAGE_FILE_MACHINE_AMD64;
 						break;
 					case Machine.ARM:
@@ -770,6 +781,9 @@ namespace Frida {
 						break;
 					case Machine.ARM64:
 						file_header.machine = IMAGE_FILE_MACHINE_ARM64;
+						break;
+					case Machine.MIPS:
+						file_header.machine = IMAGE_FILE_MACHINE_MIPS16;
 						break;
 					default:
 						assert_not_reached ();

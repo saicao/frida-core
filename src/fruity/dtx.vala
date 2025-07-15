@@ -1,18 +1,18 @@
 [CCode (gir_namespace = "FridaFruity", gir_version = "1.0")]
 namespace Frida.Fruity {
-	public class DeviceInfoService : Object, AsyncInitable {
-		public ChannelProvider channel_provider {
+	public sealed class DeviceInfoService : Object, AsyncInitable {
+		public HostChannelProvider channel_provider {
 			get;
 			construct;
 		}
 
 		private DTXChannel channel;
 
-		private DeviceInfoService (ChannelProvider channel_provider) {
+		private DeviceInfoService (HostChannelProvider channel_provider) {
 			Object (channel_provider: channel_provider);
 		}
 
-		public static async DeviceInfoService open (ChannelProvider channel_provider, Cancellable? cancellable = null)
+		public static async DeviceInfoService open (HostChannelProvider channel_provider, Cancellable? cancellable = null)
 				throws Error, IOError {
 			var service = new DeviceInfoService (channel_provider);
 
@@ -74,21 +74,53 @@ namespace Frida.Fruity {
 				return "/private" + name;
 			return name;
 		}
+
+		public sealed class ProcessInfo : Object {
+			public uint pid {
+				get;
+				set;
+			}
+
+			public string name {
+				get;
+				set;
+			}
+
+			public string real_app_name {
+				get;
+				set;
+			}
+
+			public bool is_application {
+				get;
+				set;
+			}
+
+			public bool foreground_running {
+				get;
+				set;
+			}
+
+			public DateTime? start_date {
+				get;
+				set;
+			}
+		}
 	}
 
-	public class ApplicationListingService : Object, AsyncInitable {
-		public ChannelProvider channel_provider {
+	public sealed class ApplicationListingService : Object, AsyncInitable {
+		public HostChannelProvider channel_provider {
 			get;
 			construct;
 		}
 
 		private DTXChannel channel;
 
-		private ApplicationListingService (ChannelProvider channel_provider) {
+		private ApplicationListingService (HostChannelProvider channel_provider) {
 			Object (channel_provider: channel_provider);
 		}
 
-		public static async ApplicationListingService open (ChannelProvider channel_provider, Cancellable? cancellable = null)
+		public static async ApplicationListingService open (HostChannelProvider channel_provider, Cancellable? cancellable = null)
 				throws Error, IOError {
 			var service = new ApplicationListingService (channel_provider);
 
@@ -178,21 +210,115 @@ namespace Frida.Fruity {
 
 			return result;
 		}
+
+		public sealed class ApplicationInfo : Object {
+			public ApplicationType app_type {
+				get;
+				set;
+			}
+
+			public string display_name {
+				get;
+				set;
+			}
+
+			public string bundle_identifier {
+				get;
+				set;
+			}
+
+			public string bundle_path {
+				get;
+				set;
+			}
+
+			public string? version {
+				get;
+				set;
+			}
+
+			public bool placeholder {
+				get;
+				set;
+			}
+
+			public bool restricted {
+				get;
+				set;
+			}
+
+			public string? executable_name {
+				get;
+				set;
+			}
+
+			public string[]? app_extension_uuids {
+				get;
+				set;
+			}
+
+			public string? plugin_uuid {
+				get;
+				set;
+			}
+
+			public string? plugin_identifier {
+				get;
+				set;
+			}
+
+			public string? container_bundle_identifier {
+				get;
+				set;
+			}
+
+			public string? container_bundle_path {
+				get;
+				set;
+			}
+		}
+
+		public enum ApplicationType {
+			SYSTEM = 1,
+			USER,
+			PLUGIN_KIT;
+
+			public static ApplicationType from_nick (string nick) throws Error {
+				return Marshal.enum_from_nick<ApplicationType> (nick);
+			}
+
+			public string to_nick () {
+				return Marshal.enum_to_nick<ApplicationType> (this);
+			}
+
+			internal static ApplicationType from_dtx (string type) {
+				if (type == "System")
+					return SYSTEM;
+
+				if (type == "User")
+					return USER;
+
+				if (type == "PluginKit")
+					return PLUGIN_KIT;
+
+				assert_not_reached ();
+			}
+		}
 	}
 
-	public class ProcessControlService : Object, AsyncInitable {
-		public ChannelProvider channel_provider {
+	public sealed class ProcessControlService : Object, AsyncInitable {
+		public HostChannelProvider channel_provider {
 			get;
 			construct;
 		}
 
 		private DTXChannel channel;
 
-		private ProcessControlService (ChannelProvider channel_provider) {
+		private ProcessControlService (HostChannelProvider channel_provider) {
 			Object (channel_provider: channel_provider);
 		}
 
-		public static async ProcessControlService open (ChannelProvider channel_provider, Cancellable? cancellable = null)
+		public static async ProcessControlService open (HostChannelProvider channel_provider, Cancellable? cancellable = null)
 				throws Error, IOError {
 			var service = new ProcessControlService (channel_provider);
 
@@ -220,133 +346,7 @@ namespace Frida.Fruity {
 		}
 	}
 
-	public class ProcessInfo : Object {
-		public uint pid {
-			get;
-			set;
-		}
-
-		public string name {
-			get;
-			set;
-		}
-
-		public string real_app_name {
-			get;
-			set;
-		}
-
-		public bool is_application {
-			get;
-			set;
-		}
-
-		public bool foreground_running {
-			get;
-			set;
-		}
-
-		public DateTime? start_date {
-			get;
-			set;
-		}
-	}
-
-	public class ApplicationInfo : Object {
-		public ApplicationType app_type {
-			get;
-			set;
-		}
-
-		public string display_name {
-			get;
-			set;
-		}
-
-		public string bundle_identifier {
-			get;
-			set;
-		}
-
-		public string bundle_path {
-			get;
-			set;
-		}
-
-		public string? version {
-			get;
-			set;
-		}
-
-		public bool placeholder {
-			get;
-			set;
-		}
-
-		public bool restricted {
-			get;
-			set;
-		}
-
-		public string? executable_name {
-			get;
-			set;
-		}
-
-		public string[]? app_extension_uuids {
-			get;
-			set;
-		}
-
-		public string? plugin_uuid {
-			get;
-			set;
-		}
-
-		public string? plugin_identifier {
-			get;
-			set;
-		}
-
-		public string? container_bundle_identifier {
-			get;
-			set;
-		}
-
-		public string? container_bundle_path {
-			get;
-			set;
-		}
-	}
-
-	public enum ApplicationType {
-		SYSTEM = 1,
-		USER,
-		PLUGIN_KIT;
-
-		public static ApplicationType from_nick (string nick) throws Error {
-			return Marshal.enum_from_nick<ApplicationType> (nick);
-		}
-
-		public string to_nick () {
-			return Marshal.enum_to_nick<ApplicationType> (this);
-		}
-
-		internal static ApplicationType from_dtx (string type) {
-			if (type == "System")
-				return SYSTEM;
-
-			if (type == "User")
-				return USER;
-
-			if (type == "PluginKit")
-				return PLUGIN_KIT;
-
-			assert_not_reached ();
-		}
-	}
-
-	public class DTXConnection : Object, DTXTransport {
+	public sealed class DTXConnection : Object, DTXTransport {
 		public IOStream stream {
 			get;
 			construct;
@@ -363,7 +363,7 @@ namespace Frida.Fruity {
 			CLOSED
 		}
 
-		private static Gee.HashMap<ChannelProvider, Future<DTXConnection>> connections;
+		private static Gee.HashMap<HostChannelProvider, Future<DTXConnection>> connections;
 
 		private State _state = OPEN;
 
@@ -383,19 +383,21 @@ namespace Frida.Fruity {
 		private const uint32 DTX_FRAGMENT_MAGIC = 0x1f3d5b79U;
 		private const uint MAX_BUFFERED_COUNT = 100;
 		private const size_t MAX_BUFFERED_SIZE = 30 * 1024 * 1024;
-		private const size_t MAX_MESSAGE_SIZE = 1024 * 1024;
+		private const size_t MAX_MESSAGE_SIZE = 128 * 1024 * 1024;
 		private const size_t MAX_FRAGMENT_SIZE = 128 * 1024;
-		private const string REMOTESERVER_ENDPOINT_MODERN = "lockdown:com.apple.instruments.remoteserver.DVTSecureSocketProxy";
+		private const string REMOTESERVER_ENDPOINT_17PLUS = "lockdown:com.apple.instruments.dtservicehub";
+		private const string REMOTESERVER_ENDPOINT_14PLUS = "lockdown:com.apple.instruments.remoteserver.DVTSecureSocketProxy";
 		private const string REMOTESERVER_ENDPOINT_LEGACY = "lockdown:com.apple.instruments.remoteserver?tls=handshake-only";
  		private const string[] REMOTESERVER_ENDPOINT_CANDIDATES = {
-			REMOTESERVER_ENDPOINT_MODERN,
+			REMOTESERVER_ENDPOINT_17PLUS,
+			REMOTESERVER_ENDPOINT_14PLUS,
 			REMOTESERVER_ENDPOINT_LEGACY,
 		};
 
-		public static async DTXConnection obtain (ChannelProvider channel_provider, Cancellable? cancellable)
+		public static async DTXConnection obtain (HostChannelProvider channel_provider, Cancellable? cancellable)
 				throws Error, IOError {
 			if (connections == null)
-				connections = new Gee.HashMap<ChannelProvider, Future<DTXConnection>> ();
+				connections = new Gee.HashMap<HostChannelProvider, Future<DTXConnection>> ();
 
 			while (connections.has_key (channel_provider)) {
 				var future = connections[channel_provider];
@@ -442,7 +444,7 @@ namespace Frida.Fruity {
 			throw api_error;
 		}
 
-		public static async void close_all (ChannelProvider channel_provider, Cancellable? cancellable) throws IOError {
+		public static async void close_all (HostChannelProvider channel_provider, Cancellable? cancellable) throws IOError {
 			if (connections == null)
 				return;
 
@@ -500,6 +502,14 @@ namespace Frida.Fruity {
 			}
 
 			process_incoming_fragments.begin ();
+		}
+
+		public override void dispose () {
+			foreach (var channel in channels.values)
+				channel.transport = null;
+			channels.clear ();
+
+			base.dispose ();
 		}
 
 		private async void close (Cancellable? cancellable) throws IOError {
@@ -705,7 +715,9 @@ namespace Frida.Fruity {
 
 			int32 channel_code = message.channel_code;
 			bool is_notification = false;
-			if (message.type == RESULT && channel_code < 0) {
+			if (message.type == INVOKE) {
+				channel_code = -channel_code;
+			} else if (message.type == RESULT && channel_code < 0) {
 				channel_code = -channel_code;
 				is_notification = true;
 			}
@@ -835,7 +847,7 @@ namespace Frida.Fruity {
 		}
 	}
 
-	private class DTXControlChannel : DTXChannel {
+	private sealed class DTXControlChannel : DTXChannel {
 		public DTXControlChannel (DTXTransport transport) {
 			Object (code: 0, transport: transport);
 		}
@@ -866,7 +878,7 @@ namespace Frida.Fruity {
 
 	public class DTXChannel : Object {
 		public signal void invocation (string method_name, DTXArgumentList args, DTXMessageTransportFlags transport_flags);
-		public signal void notification (NSDictionary dict);
+		public signal void notification (NSObject obj);
 		public signal void barrier ();
 
 		public int32 code {
@@ -874,9 +886,9 @@ namespace Frida.Fruity {
 			construct;
 		}
 
-		public weak DTXTransport transport {
+		public weak DTXTransport? transport {
 			get;
-			construct;
+			set;
 		}
 
 		public State state {
@@ -899,7 +911,7 @@ namespace Frida.Fruity {
 		}
 
 		public override void dispose () {
-			transport.remove_channel (this);
+			close ();
 
 			base.dispose ();
 		}
@@ -911,6 +923,11 @@ namespace Frida.Fruity {
 			var error = new Error.TRANSPORT ("Channel closed");
 			foreach (var request in pending_responses.values.to_array ())
 				request.reject (error);
+
+			if (transport != null) {
+				transport.remove_channel (this);
+				transport = null;
+			}
 		}
 
 		public async NSObject? invoke (string method_name, DTXArgumentListBuilder? args, Cancellable? cancellable)
@@ -1016,10 +1033,8 @@ namespace Frida.Fruity {
 		}
 
 		internal void handle_notification (DTXMessage message) throws Error {
-			NSDictionary? dict = NSKeyedArchive.decode (message.payload_data) as NSDictionary;
-			if (dict == null)
-				throw new Error.PROTOCOL ("Malformed notification payload");
-			notification (dict);
+			var payload = NSKeyedArchive.decode (message.payload_data);
+			notification (payload);
 		}
 
 		internal void handle_barrier (DTXMessage message) throws Error {
@@ -1062,7 +1077,7 @@ namespace Frida.Fruity {
 	}
 
 	public class DTXArgumentList {
-		private Value[] elements;
+		public Value[] elements;
 
 		private DTXArgumentList (owned Value[] elements) {
 			this.elements = (owned) elements;
@@ -1146,7 +1161,7 @@ namespace Frida.Fruity {
 		}
 	}
 
-	public class DTXArgumentListBuilder {
+	public sealed class DTXArgumentListBuilder {
 		private PrimitiveBuilder blob = new PrimitiveBuilder ();
 
 		public DTXArgumentListBuilder () {
@@ -1212,7 +1227,7 @@ namespace Frida.Fruity {
 
 	private const size_t PRIMITIVE_DICTIONARY_HEADER_SIZE = 16;
 
-	private class PrimitiveReader {
+	private sealed class PrimitiveReader {
 		public size_t available_bytes {
 			get {
 				return end - cursor;
@@ -1302,7 +1317,7 @@ namespace Frida.Fruity {
 		}
 	}
 
-	private class PrimitiveBuilder {
+	private sealed class PrimitiveBuilder {
 		public size_t offset {
 			get {
 				return cursor;

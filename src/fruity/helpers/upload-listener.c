@@ -1,25 +1,27 @@
 #include "upload-api.h"
 
+static uint64_t frida_query_debugger_mapping_enforced (const FridaUploadApi * api);
+
 uint64_t
 frida_listen (int rx_buffer_size, const FridaUploadApi * api)
 {
   uint8_t error_code;
   int fd;
-  struct sockaddr_in addr;
+  struct sockaddr_in6 addr = {
+    .sin6_family = AF_INET6,
+    .sin6_addr = IN6ADDR_ANY_INIT,
+    .sin6_port = 0,
+  };
   socklen_t addr_len;
   int res;
 
-  fd = api->socket (AF_INET, SOCK_STREAM, 0);
+  fd = api->socket (AF_INET6, SOCK_STREAM, 0);
   if (fd == -1)
     goto socket_failed;
 
   res = api->setsockopt (fd, SOL_SOCKET, SO_RCVBUF, &rx_buffer_size, sizeof (rx_buffer_size));
   if (res == -1)
     goto setsockopt_failed;
-
-  addr.sin_family = AF_INET;
-  addr.sin_addr.s_addr = htonl (INADDR_LOOPBACK);
-  addr.sin_port = 0;
 
   addr_len = sizeof (addr);
 
@@ -35,7 +37,7 @@ frida_listen (int rx_buffer_size, const FridaUploadApi * api)
   if (res == -1)
     goto listen_failed;
 
-  return ((uint64_t) fd << 16) | ntohs (addr.sin_port);
+  return (frida_query_debugger_mapping_enforced (api) << 56) | ((uint64_t) fd << 16) | ntohs (addr.sin6_port);
 
 socket_failed:
   {
@@ -67,8 +69,36 @@ failure:
     if (fd != -1)
       api->close (fd);
 
-    return ((uint64_t) error_code << 56);
+    return ((uint64_t) error_code << 57);
   }
+}
+
+static uint64_t
+frida_query_debugger_mapping_enforced (const FridaUploadApi * api)
+{
+  uint64_t is_enforced;
+  mach_port_t task;
+  int page_size;
+  mach_vm_address_t start;
+  vm_address_t addr;
+  vm_prot_t cur_prot, max_prot;
+
+  task = api->_mach_task_self ();
+  page_size = api->getpagesize ();
+
+  api->mach_vm_allocate (task, &start, page_size, VM_FLAGS_ANYWHERE);
+  *(uint32_t *) start = 1337;
+  api->mprotect ((void *) start, page_size, PROT_READ | PROT_EXEC);
+
+  addr = 0;
+  api->vm_remap (task, &addr, page_size, 0, VM_FLAGS_ANYWHERE, task, start, FALSE, &cur_prot, &max_prot, VM_INHERIT_NONE);
+
+  is_enforced = (cur_prot & (VM_PROT_READ | VM_PROT_EXECUTE)) != (VM_PROT_READ | VM_PROT_EXECUTE);
+
+  api->mach_vm_deallocate (task, addr, page_size);
+  api->mach_vm_deallocate (task, start, page_size);
+
+  return is_enforced;
 }
 
 #ifdef BUILDING_TEST_PROGRAM

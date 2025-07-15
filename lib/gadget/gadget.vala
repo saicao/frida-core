@@ -1,5 +1,5 @@
 namespace Frida.Gadget {
-	private class Config : Object, Json.Serializable {
+	private sealed class Config : Object, Json.Serializable {
 		public Object interaction {
 			get;
 			set;
@@ -22,12 +22,6 @@ namespace Frida.Gadget {
 			get;
 			set;
 			default = Gum.CodeSigningPolicy.OPTIONAL;
-		}
-
-		private ObjectClass klass = (ObjectClass) typeof (Config).class_ref ();
-
-		public Json.Node serialize_property (string property_name, GLib.Value value, GLib.ParamSpec pspec) {
-			return default_serialize_property (property_name, value, pspec);
 		}
 
 		public bool deserialize_property (string property_name, out Value value, ParamSpec pspec, Json.Node property_node) {
@@ -77,23 +71,9 @@ namespace Frida.Gadget {
 			value = Value (pspec.value_type);
 			return false;
 		}
-
-		public unowned ParamSpec? find_property (string name) {
-			return klass.find_property (name);
-		}
-
-		public new Value get_property (ParamSpec pspec) {
-			var val = Value (pspec.value_type);
-			base.get_property (pspec.name, ref val);
-			return val;
-		}
-
-		public new void set_property (ParamSpec pspec, Value value) {
-			base.set_property (pspec.name, value);
-		}
 	}
 
-	private class ScriptInteraction : Object, Json.Serializable {
+	private sealed class ScriptInteraction : Object, Json.Serializable {
 		public string path {
 			get;
 			set;
@@ -112,12 +92,6 @@ namespace Frida.Gadget {
 			default = Script.ChangeBehavior.IGNORE;
 		}
 
-		private ObjectClass klass = (ObjectClass) typeof (ScriptInteraction).class_ref ();
-
-		public Json.Node serialize_property (string property_name, GLib.Value value, GLib.ParamSpec pspec) {
-			return default_serialize_property (property_name, value, pspec);
-		}
-
 		public bool deserialize_property (string property_name, out Value value, ParamSpec pspec, Json.Node property_node) {
 			if (property_name == "parameters" && property_node.get_node_type () == Json.NodeType.OBJECT) {
 				var v = Value (typeof (Json.Node));
@@ -129,23 +103,9 @@ namespace Frida.Gadget {
 			value = Value (pspec.value_type);
 			return false;
 		}
-
-		public unowned ParamSpec? find_property (string name) {
-			return klass.find_property (name);
-		}
-
-		public new Value get_property (ParamSpec pspec) {
-			var val = Value (pspec.value_type);
-			base.get_property (pspec.name, ref val);
-			return val;
-		}
-
-		public new void set_property (ParamSpec pspec, Value value) {
-			base.set_property (pspec.name, value);
-		}
 	}
 
-	private class ScriptDirectoryInteraction : Object {
+	private sealed class ScriptDirectoryInteraction : Object {
 		public string path {
 			get;
 			set;
@@ -164,7 +124,7 @@ namespace Frida.Gadget {
 		}
 	}
 
-	private class ScriptConfig : Object, Json.Serializable {
+	private sealed class ScriptConfig : Object, Json.Serializable {
 		public ProcessFilter? filter {
 			get;
 			set;
@@ -183,12 +143,6 @@ namespace Frida.Gadget {
 			default = Script.ChangeBehavior.IGNORE;
 		}
 
-		private ObjectClass klass = (ObjectClass) typeof (ScriptConfig).class_ref ();
-
-		public Json.Node serialize_property (string property_name, GLib.Value value, GLib.ParamSpec pspec) {
-			return default_serialize_property (property_name, value, pspec);
-		}
-
 		public bool deserialize_property (string property_name, out Value value, ParamSpec pspec, Json.Node property_node) {
 			if (property_name == "parameters" && property_node.get_node_type () == Json.NodeType.OBJECT) {
 				var v = Value (typeof (Json.Node));
@@ -200,23 +154,9 @@ namespace Frida.Gadget {
 			value = Value (pspec.value_type);
 			return false;
 		}
-
-		public unowned ParamSpec? find_property (string name) {
-			return klass.find_property (name);
-		}
-
-		public new Value get_property (ParamSpec pspec) {
-			var val = Value (pspec.value_type);
-			base.get_property (pspec.name, ref val);
-			return val;
-		}
-
-		public new void set_property (ParamSpec pspec, Value value) {
-			base.set_property (pspec.name, value);
-		}
 	}
 
-	private class ProcessFilter : Object {
+	private sealed class ProcessFilter : Object {
 		public string[] executables {
 			get;
 			set;
@@ -258,7 +198,7 @@ namespace Frida.Gadget {
 		}
 	}
 
-	private class ListenInteraction : SocketInteraction {
+	private sealed class ListenInteraction : SocketInteraction {
 		public PortConflictBehavior on_port_conflict {
 			get;
 			set;
@@ -287,7 +227,7 @@ namespace Frida.Gadget {
 		}
 	}
 
-	private class ConnectInteraction : SocketInteraction, Json.Serializable {
+	private sealed class ConnectInteraction : SocketInteraction, Json.Serializable {
 		public string[]? acl {
 			get;
 			set;
@@ -298,8 +238,6 @@ namespace Frida.Gadget {
 			set;
 			default = make_empty_json_object ();
 		}
-
-		private ObjectClass klass = (ObjectClass) typeof (ConnectInteraction).class_ref ();
 
 		public bool deserialize_property (string property_name, out Value value, ParamSpec pspec, Json.Node property_node) {
 			if (property_name == "parameters" && property_node.get_node_type () == Json.NodeType.OBJECT) {
@@ -312,23 +250,9 @@ namespace Frida.Gadget {
 			value = Value (pspec.value_type);
 			return false;
 		}
-
-		public unowned ParamSpec? find_property (string name) {
-			return klass.find_property (name);
-		}
-
-		public new Value get_property (ParamSpec pspec) {
-			var val = Value (pspec.value_type);
-			base.get_property (pspec.name, ref val);
-			return val;
-		}
-
-		public new void set_property (ParamSpec pspec, Value value) {
-			base.set_property (pspec.name, value);
-		}
 	}
 
-	private class Location : Object {
+	private sealed class Location : Object {
 		public string executable_name {
 			get;
 			construct;
@@ -751,7 +675,7 @@ namespace Frida.Gadget {
 
 		string config_data;
 		try {
-			FileUtils.get_contents (config_path, out config_data);
+			load_asset_text (config_path, out config_data);
 		} catch (FileError e) {
 			if (e is FileError.NOENT)
 				return new Config ();
@@ -759,7 +683,7 @@ namespace Frida.Gadget {
 		}
 
 		try {
-			return Json.gobject_from_data (typeof (Config), config_data) as Config;
+			return (Config) Json.gobject_from_data (typeof (Config), config_data);
 		} catch (GLib.Error e) {
 			throw new Error.INVALID_ARGUMENT ("Invalid config: %s", e.message);
 		}
@@ -767,7 +691,7 @@ namespace Frida.Gadget {
 
 	private Config parse_config (string config_data) throws Error {
 		try {
-			return Json.gobject_from_data (typeof (Config), config_data) as Config;
+			return (Config) Json.gobject_from_data (typeof (Config), config_data);
 		} catch (GLib.Error e) {
 			throw new Error.INVALID_ARGUMENT ("Invalid config: %s", e.message);
 		}
@@ -775,21 +699,20 @@ namespace Frida.Gadget {
 
 	private Location detect_location (Gum.MemoryRange? mapped_range) {
 		string? executable_name = null;
-		string? executable_path = null;
-		Gum.MemoryRange? executable_range = null;
 		string? our_path = null;
 		Gum.MemoryRange? our_range = mapped_range;
 
 		Gum.Address our_address = Gum.Address.from_pointer (Gum.strip_code_pointer ((void *) detect_location));
 
+#if DARWIN
+		Environment.detect_darwin_location_fields (our_address, ref executable_name, ref our_path, ref our_range);
+#else
 		var index = 0;
 		Gum.Process.enumerate_modules ((details) => {
 			var range = details.range;
 
 			if (index == 0) {
 				executable_name = details.name;
-				executable_path = details.path;
-				executable_range = details.range;
 			}
 
 			if (mapped_range != null)
@@ -805,6 +728,7 @@ namespace Frida.Gadget {
 
 			return true;
 		});
+#endif
 
 		assert (our_range != null);
 
@@ -841,6 +765,7 @@ namespace Frida.Gadget {
 
 		private ExitMonitor exit_monitor;
 		private ThreadSuspendMonitor thread_suspend_monitor;
+		private UnwindSitter unwind_sitter;
 
 		private Gum.ScriptBackend? qjs_backend;
 		private Gum.ScriptBackend? v8_backend;
@@ -852,6 +777,7 @@ namespace Frida.Gadget {
 		construct {
 			exit_monitor = new ExitMonitor (this, MainContext.default ());
 			thread_suspend_monitor = new ThreadSuspendMonitor (this);
+			unwind_sitter = new UnwindSitter (this);
 		}
 
 		public async void start () throws Error, IOError {
@@ -986,7 +912,7 @@ namespace Frida.Gadget {
 		}
 	}
 
-	private class ScriptRunner : BaseController {
+	private sealed class ScriptRunner : BaseController {
 		private ScriptEngine engine;
 		private Script script;
 
@@ -1034,7 +960,7 @@ namespace Frida.Gadget {
 		}
 	}
 
-	private class ScriptDirectoryRunner : BaseController {
+	private sealed class ScriptDirectoryRunner : BaseController {
 		public string directory_path {
 			get;
 			construct;
@@ -1224,7 +1150,7 @@ namespace Frida.Gadget {
 		private ScriptConfig load_config (string path) throws Error {
 			string data;
 			try {
-				FileUtils.get_contents (path, out data);
+				load_asset_text (path, out data);
 			} catch (FileError e) {
 				if (e is FileError.NOENT)
 					return new ScriptConfig ();
@@ -1232,15 +1158,21 @@ namespace Frida.Gadget {
 			}
 
 			try {
-				return Json.gobject_from_data (typeof (ScriptConfig), data) as ScriptConfig;
+				return (ScriptConfig) Json.gobject_from_data (typeof (ScriptConfig), data);
 			} catch (GLib.Error e) {
 				throw new Error.INVALID_ARGUMENT ("Invalid config: %s", e.message);
 			}
 		}
 	}
 
-	private class Script : Object, RpcPeer {
-		private const uint8 QUICKJS_BYTECODE_MAGIC = 0x02;
+	private sealed class Script : Object, RpcPeer {
+		private const uint8 QUICKJS_BYTECODE_MAGIC =
+#if BIG_ENDIAN
+			0x42
+#else
+			0x02
+#endif
+			;
 
 		public enum ChangeBehavior {
 			IGNORE,
@@ -1347,9 +1279,9 @@ namespace Frida.Gadget {
 			try {
 				var path = this.path;
 
-				uint8[] contents;
+				Bytes contents;
 				try {
-					FileUtils.get_data (path, out contents);
+					load_asset_bytes (path, out contents);
 				} catch (FileError e) {
 					throw new Error.INVALID_ARGUMENT ("%s", e.message);
 				}
@@ -1358,11 +1290,10 @@ namespace Frida.Gadget {
 				options.name = Path.get_basename (path).split (".", 2)[0];
 
 				ScriptEngine.ScriptInstance instance;
-				if (contents.length > 0 && contents[0] == QUICKJS_BYTECODE_MAGIC) {
-					instance = yield engine.create_script (null, new Bytes (contents), options);
-				} else {
-					instance = yield engine.create_script ((string) contents, null, options);
-				}
+				if (contents.length > 0 && contents[0] == QUICKJS_BYTECODE_MAGIC)
+					instance = yield engine.create_script (null, contents, options);
+				else
+					instance = yield engine.create_script ((string) contents.get_data (), null, options);
 
 				if (id.handle != 0)
 					yield engine.destroy_script (id);
@@ -1379,7 +1310,7 @@ namespace Frida.Gadget {
 			var stage = new Json.Node.alloc ().init_string ((peek_state () == State.CREATED) ? "early" : "late");
 
 			try {
-				yield rpc_client.call ("init", new Json.Node[] { stage, parameters }, null);
+				yield rpc_client.call ("init", new Json.Node[] { stage, parameters }, null, null);
 			} catch (GLib.Error e) {
 			}
 		}
@@ -1447,12 +1378,12 @@ namespace Frida.Gadget {
 			return true;
 		}
 
-		private async void post_rpc_message (string json, Cancellable? cancellable) throws Error, IOError {
-			engine.post_to_script (id, json);
+		private async void post_rpc_message (string json, Bytes? data, Cancellable? cancellable) throws Error, IOError {
+			engine.post_to_script (id, json, data);
 		}
 	}
 
-	private class ControlServer : BaseController {
+	private sealed class ControlServer : BaseController {
 		public EndpointParameters endpoint_params {
 			get;
 			construct;
@@ -1495,7 +1426,8 @@ namespace Frida.Gadget {
 			var endpoint_params = new EndpointParameters (interaction.address, interaction.port,
 				parse_certificate (interaction.certificate, location), interaction.origin, auth_service, asset_root);
 
-			service = new WebService (endpoint_params, CONTROL, interaction.on_port_conflict);
+			service = new WebService (endpoint_params, WebServiceFlavor.CONTROL, interaction.on_port_conflict,
+				new TunnelInterfaceObserver ());
 			service.incoming.connect (on_incoming_connection);
 			yield service.start (io_cancellable);
 		}
@@ -1925,6 +1857,14 @@ namespace Frida.Gadget {
 				throw new Error.NOT_SUPPORTED ("Unable to inject libraries when embedded");
 			}
 
+			public async ChannelId open_channel (string address, Cancellable? cancellable) throws Error, IOError {
+				throw new Error.NOT_SUPPORTED ("Unable to open channels when embedded");
+			}
+
+			public async ServiceSessionId open_service (string address, Cancellable? cancellable) throws Error, IOError {
+				throw new Error.NOT_SUPPORTED ("Unable to open services when embedded");
+			}
+
 			private void validate_pid (uint pid) throws Error {
 				if (pid != this_process.pid)
 					throw new Error.NOT_SUPPORTED ("Unable to act on other processes when embedded");
@@ -1956,7 +1896,7 @@ namespace Frida.Gadget {
 		}
 	}
 
-	private class ClusterClient : BaseController {
+	private sealed class ClusterClient : BaseController {
 		public SocketConnectable connectable {
 			get;
 			construct;
@@ -2073,6 +2013,60 @@ namespace Frida.Gadget {
 	}
 #endif
 
+	private void load_asset_text (string filename, out string text) throws FileError {
+		Bytes raw_contents;
+		load_asset_bytes (filename, out raw_contents);
+
+		unowned string str = (string) raw_contents.get_data ();
+		if (!str.validate ())
+			throw new FileError.FAILED ("%s: invalid UTF-8", filename);
+
+		text = str;
+	}
+
+	private void load_asset_bytes (string filename, out Bytes bytes) throws FileError {
+#if ANDROID
+		if (maybe_load_asset_bytes_from_apk (filename, out bytes))
+			return;
+#endif
+
+		uint8[] data;
+		FileUtils.get_data (filename, out data);
+		bytes = new Bytes.take ((owned) data);
+	}
+
+#if ANDROID
+	private bool maybe_load_asset_bytes_from_apk (string filename, out Bytes contents) throws FileError {
+		contents = null;
+
+		var tokens = filename.split ("!", 2);
+		if (tokens.length != 2 || !tokens[0].has_suffix (".apk"))
+			return false;
+		unowned string apk_path = tokens[0];
+		unowned string file_path = tokens[1];
+
+		var reader = Minizip.Reader.create ();
+		try {
+			if (reader.open_file (apk_path) != OK)
+				throw new FileError.FAILED ("Unable to open APK");
+
+			if (reader.locate_entry (file_path[1:], true) != OK)
+				throw new FileError.FAILED ("Unable to locate %s inside APK", file_path);
+
+			var size = reader.entry_save_buffer_length ();
+			var data = new uint8[size + 1];
+			if (reader.entry_save_buffer (data[:size]) != OK)
+				throw new FileError.FAILED ("Unable to extract %s from APK", file_path);
+
+			contents = new Bytes.take ((owned) data);
+			return true;
+		} finally {
+			reader.close ();
+			Minizip.Reader.destroy (ref reader);
+		}
+	}
+#endif
+
 	private Json.Node make_empty_json_object () {
 		return new Json.Node.alloc ().init_object (new Json.Object ());
 	}
@@ -2106,6 +2100,10 @@ namespace Frida.Gadget {
 		private extern bool has_objc_class (string name);
 
 		private extern void set_thread_name (string name);
+#if DARWIN
+		private extern void detect_darwin_location_fields (Gum.Address our_address, ref string? executable_name,
+			ref string? our_path, ref Gum.MemoryRange? our_range);
+#endif
 	}
 
 	private extern void log_info (string message);

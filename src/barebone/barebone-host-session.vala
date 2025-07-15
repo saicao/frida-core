@@ -1,27 +1,9 @@
 namespace Frida {
-	public class BareboneHostSessionBackend : Object, HostSessionBackend {
+	public sealed class BareboneHostSessionBackend : Object, HostSessionBackend {
 		private BareboneHostSessionProvider? provider;
 
-		private const uint16 DEFAULT_PORT = 3333;
-
 		public async void start (Cancellable? cancellable) throws IOError {
-			SocketConnectable? connectable = null;
-			unowned string? address = Environment.get_variable ("FRIDA_BAREBONE_ADDRESS");
-			if (address != null) {
-				try {
-					connectable = NetworkAddress.parse (address, DEFAULT_PORT);
-				} catch (GLib.Error e) {
-				}
-			}
-			if (connectable == null)
-				connectable = new InetSocketAddress (new InetAddress.loopback (SocketFamily.IPV4), DEFAULT_PORT);
-
-			uint64 heap_base_pa = 0;
-			unowned string? heap_base_preference = Environment.get_variable ("FRIDA_BAREBONE_HEAP_BASE");
-			if (heap_base_preference != null)
-				heap_base_pa = uint64.parse (heap_base_preference, 16);
-
-			provider = new BareboneHostSessionProvider (connectable, heap_base_pa);
+			provider = new BareboneHostSessionProvider ();
 			provider_available (provider);
 		}
 
@@ -30,7 +12,7 @@ namespace Frida {
 		}
 	}
 
-	public class BareboneHostSessionProvider : Object, HostSessionProvider {
+	public sealed class BareboneHostSessionProvider : Object, HostSessionProvider {
 		public string id {
 			get { return "barebone"; }
 		}
@@ -49,21 +31,7 @@ namespace Frida {
 			}
 		}
 
-		public SocketConnectable connectable {
-			get;
-			construct;
-		}
-
-		public uint64 heap_base_pa {
-			get;
-			construct;
-		}
-
 		private BareboneHostSession? host_session;
-
-		public BareboneHostSessionProvider (SocketConnectable connectable, uint64 heap_base_pa) {
-			Object (connectable: connectable, heap_base_pa: heap_base_pa);
-		}
 
 		public async void close (Cancellable? cancellable) throws IOError {
 			if (host_session != null) {
@@ -75,6 +43,27 @@ namespace Frida {
 		public async HostSession create (HostSessionOptions? options, Cancellable? cancellable) throws Error, IOError {
 			if (host_session != null)
 				throw new Error.INVALID_OPERATION ("Already created");
+
+			Barebone.Config config;
+			unowned string? config_path = Environment.get_variable ("FRIDA_BAREBONE_CONFIG");
+			if (config_path != null) {
+				try {
+					var config_data = yield FS.read_all_text (File.new_for_path (config_path), cancellable);
+					config = (Barebone.Config) Json.gobject_from_data (typeof (Barebone.Config), config_data);
+				} catch (GLib.Error e) {
+					throw new Error.INVALID_ARGUMENT ("Unable to load %s: %s", config_path, e.message);
+				}
+			} else {
+				config = new Barebone.Config ();
+			}
+
+			SocketConnectable connectable;
+			try {
+				Barebone.ConnectionConfig c = config.connection;
+				connectable = NetworkAddress.parse (c.host, c.port);
+			} catch (GLib.Error e) {
+				throw new Error.INVALID_ARGUMENT ("Unable to load %s: %s", config_path, e.message);
+			}
 
 			IOStream stream;
 			try {
@@ -111,8 +100,19 @@ namespace Frida {
 
 			var page_size = yield machine.query_page_size (cancellable);
 
-			// TODO: Locate and use kernel's allocator when possible.
-			Barebone.Allocator allocator = new Barebone.SimpleAllocator (machine, page_size, heap_base_pa);
+			Barebone.Allocator allocator;
+			Barebone.AllocatorConfig ac = config.allocator;
+			if (ac is Barebone.NoAllocatorConfig) {
+				allocator = new Barebone.NullAllocator (page_size);
+			} else if (ac is Barebone.PhysicalAllocatorConfig) {
+				allocator = new Barebone.PhysicalAllocator (machine, page_size,
+					(Barebone.PhysicalAllocatorConfig) ac);
+			} else if (ac is Barebone.TargetFunctionsAllocatorConfig) {
+				allocator = new Barebone.TargetFunctionsAllocator (machine, page_size,
+					(Barebone.TargetFunctionsAllocatorConfig) ac);
+			} else {
+				assert_not_reached ();
+			}
 
 			var interceptor = new Barebone.Interceptor (machine, allocator);
 
@@ -141,12 +141,35 @@ namespace Frida {
 			return yield this.host_session.link_agent_session (id, sink, cancellable);
 		}
 
+		public void unlink_agent_session (HostSession host_session, AgentSessionId id) {
+			if (host_session != this.host_session)
+				return;
+
+			this.host_session.unlink_agent_session (id);
+		}
+
+		public async IOStream link_channel (HostSession host_session, ChannelId id, Cancellable? cancellable)
+				throws Error, IOError {
+			throw new Error.NOT_SUPPORTED ("Channels are not supported by this backend");
+		}
+
+		public void unlink_channel (HostSession host_session, ChannelId id) {
+		}
+
+		public async ServiceSession link_service_session (HostSession host_session, ServiceSessionId id, Cancellable? cancellable)
+				throws Error, IOError {
+			throw new Error.NOT_SUPPORTED ("Services are not supported by this backend");
+		}
+
+		public void unlink_service_session (HostSession host_session, ServiceSessionId id) {
+		}
+
 		private void on_agent_session_detached (AgentSessionId id, SessionDetachReason reason, CrashInfo crash) {
 			agent_session_detached (id, reason, crash);
 		}
 	}
 
-	public class BareboneHostSession : Object, HostSession {
+	public sealed class BareboneHostSession : Object, HostSession {
 		public Barebone.Services services {
 			get;
 			construct;
@@ -260,6 +283,14 @@ namespace Frida {
 			return session;
 		}
 
+		public void unlink_agent_session (AgentSessionId id) {
+			BareboneAgentSession? session = agent_sessions[id];
+			if (session == null)
+				return;
+
+			session.message_sink = null;
+		}
+
 		public async InjectorPayloadId inject_library_file (uint pid, string path, string entrypoint, string data,
 				Cancellable? cancellable) throws Error, IOError {
 			throw_not_supported ();
@@ -268,6 +299,14 @@ namespace Frida {
 		public async InjectorPayloadId inject_library_blob (uint pid, uint8[] blob, string entrypoint, string data,
 				Cancellable? cancellable) throws Error, IOError {
 			throw_not_supported ();
+		}
+
+		public async ChannelId open_channel (string address, Cancellable? cancellable) throws Error, IOError {
+			throw new Error.NOT_SUPPORTED ("Channels are not supported by this backend");
+		}
+
+		public async ServiceSessionId open_service (string address, Cancellable? cancellable) throws Error, IOError {
+			throw new Error.NOT_SUPPORTED ("Services are not supported by this backend");
 		}
 
 		private void on_agent_session_closed (BareboneAgentSession session) {
@@ -282,7 +321,7 @@ namespace Frida {
 		}
 	}
 
-	private class BareboneAgentSession : Object, AgentSession {
+	private sealed class BareboneAgentSession : Object, AgentSession {
 		public signal void closed ();
 
 		public AgentSessionId id {
@@ -343,7 +382,7 @@ namespace Frida {
 			assert (frida_context != null);
 			assert (dbus_context != null);
 
-			transmitter = new AgentMessageTransmitter (persist_timeout, frida_context, dbus_context);
+			transmitter = new AgentMessageTransmitter (this, persist_timeout, frida_context, dbus_context);
 			transmitter.closed.connect (on_transmitter_closed);
 			transmitter.new_candidates.connect (on_transmitter_new_candidates);
 			transmitter.candidate_gathering_done.connect (on_transmitter_candidate_gathering_done);
@@ -426,7 +465,8 @@ namespace Frida {
 
 		public async void load_script (AgentScriptId script_id, Cancellable? cancellable) throws Error, IOError {
 			check_open ();
-			get_script (script_id).load ();
+			var script = get_script (script_id);
+			yield script.load (cancellable);
 		}
 
 		public async void eternalize_script (AgentScriptId script_id, Cancellable? cancellable) throws Error, IOError {
@@ -525,7 +565,7 @@ namespace Frida {
 	}
 
 	namespace Barebone {
-		public class Services : Object {
+		public sealed class Services : Object {
 			public Machine machine {
 				get;
 				construct;
@@ -554,16 +594,5 @@ namespace Frida {
 	[NoReturn]
 	private static void throw_not_supported () throws Error {
 		throw new Error.NOT_SUPPORTED ("Not yet supported");
-	}
-
-	private static uint uint64_hash (uint64? val) {
-		uint64 v = val;
-		return (uint) ((v >> 32) ^ (v & 0xffffffffU));
-	}
-
-	private static bool uint64_equal (uint64? val_a, uint64? val_b) {
-		uint64 a = val_a;
-		uint64 b = val_b;
-		return a == b;
 	}
 }

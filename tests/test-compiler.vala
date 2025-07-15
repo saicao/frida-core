@@ -13,20 +13,43 @@ namespace Frida.CompilerTest {
 
 	namespace Performance {
 		private static async void build_simple_agent (Harness h) {
+			if (skip_slow_test ()) {
+				stdout.printf ("<skipping, run in slow mode> ");
+				h.done ();
+				return;
+			}
+
 			try {
 				var device_manager = new DeviceManager ();
 				var compiler = new Compiler (device_manager);
 
 				string project_dir = DirUtils.make_tmp ("compiler-test.XXXXXX");
 				string agent_ts_path = Path.build_filename (project_dir, "agent.ts");
-				FileUtils.set_contents (agent_ts_path, "console.log(\"Hello World\");");
+				FileUtils.set_contents (agent_ts_path, """
+import { log } from "./logger.js";
+
+const woot = Buffer.from("w00t").toString("base64");
+
+log("Hello World: " + woot);
+log(hexdump(Process.mainModule.base, { ansi: true }));
+""");
+
+				string logger_ts_path = Path.build_filename (project_dir, "logger.ts");
+				FileUtils.set_contents (logger_ts_path, """
+export function log(...items: any[]) {
+    const message = items.join("\n");
+    console.log(`[LOG] ${message}`);
+}
+""");
 
 				var timer = new Timer ();
-				yield compiler.build (agent_ts_path);
+				var code = yield compiler.build (agent_ts_path);
 				uint elapsed_msec = (uint) (timer.elapsed () * 1000.0);
 
-				if (GLib.Test.verbose ())
+				if (GLib.Test.verbose ()) {
+					print ("Output:\nvvv\n%s^^^\n", code);
 					print ("Built in %u ms\n", elapsed_msec);
+				}
 
 				unowned string? test_log_path = Environment.get_variable ("FRIDA_TEST_LOG");
 				if (test_log_path != null) {
@@ -56,6 +79,7 @@ namespace Frida.CompilerTest {
 				compiler = null;
 				yield device_manager.close ();
 			} catch (GLib.Error e) {
+				printerr ("\nFAIL: %s\n\n", e.message);
 				assert_not_reached ();
 			}
 
@@ -63,6 +87,12 @@ namespace Frida.CompilerTest {
 		}
 
 		private static async void watch_simple_agent (Harness h) {
+			if (skip_slow_test ()) {
+				stdout.printf ("<skipping, run in slow mode> ");
+				h.done ();
+				return;
+			}
+
 			try {
 				var device_manager = new DeviceManager ();
 				var compiler = new Compiler (device_manager);
@@ -124,9 +154,31 @@ namespace Frida.CompilerTest {
 
 			h.done ();
 		}
+
+		private static bool skip_slow_test () {
+			if (GLib.Test.slow ())
+				return false;
+
+			if (Frida.Test.os () == Frida.Test.OS.IOS)
+				return true;
+
+			switch (Frida.Test.cpu ()) {
+				case ARM_32:
+				case ARM_64: {
+					bool likely_running_in_an_emulator = ByteOrder.HOST == ByteOrder.BIG_ENDIAN;
+					if (likely_running_in_an_emulator)
+						return true;
+					break;
+				}
+				default:
+					break;
+			}
+
+			return false;
+		}
 	}
 
-	private class Harness : Frida.Test.AsyncHarness {
+	private sealed class Harness : Frida.Test.AsyncHarness {
 		public Harness (owned Frida.Test.AsyncHarness.TestSequenceFunc func) {
 			base ((owned) func);
 		}

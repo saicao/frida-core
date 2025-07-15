@@ -1,11 +1,6 @@
 test_sources = [
   'test-system.vala',
-  'test-injector.vala',
-  'test-agent.vala',
-  'test-agent-glue.c',
-  'test-gadget.vala',
   'test-host-session.vala',
-  'test-compiler.vala',
   'runner.vala',
   'runner-glue.c',
   'labrats.vala',
@@ -14,9 +9,38 @@ test_sources = [
   'process-resource-usage.c',
 ]
 
+if host_os_family == 'darwin'
+  test_sources += 'test-host-session-darwin-glue.m'
+endif
+
+test_vala_args = []
+test_depends = []
+
+if agent_compat != ''
+  test_vala_args += '--define=CROSS_ARCH'
+endif
+
+if build_gadget
+  test_vala_args += '--define=HAVE_GADGET'
+  test_sources += 'test-gadget.vala'
+  test_depends += gadget
+endif
+
 subdir('labrats')
 
 system_vala_args = []
+
+if have_local_backend
+  test_sources += [
+    'test-injector.vala',
+    'test-agent.vala',
+    'test-agent-glue.c',
+  ]
+endif
+
+if have_compiler_backend
+  test_sources += 'test-compiler.vala'
+endif
 
 if host_os_family == 'windows'
   test_sources += ['process-windows.c']
@@ -26,55 +50,50 @@ else
   system_vala_args += ['--pkg=posix']
 endif
 
-frida_tests = static_library('frida-tests', test_sources + [labrats_stamp],
-  vala_args: system_vala_args,
+frida_tests = static_library('frida-tests', test_sources,
+  vala_args: [
+    '--pkg=gmodule-2.0',
+    test_vala_args,
+    core_vala_args,
+    system_vala_args,
+  ],
   dependencies: [gmodule_dep, json_glib_dep, core_dep],
 )
-
-runner_name = 'frida-tests'
-if host_os_family == 'darwin'
-  runner_name = 'frida-tests-unsigned'
-endif
 
 extra_link_args = []
 extra_link_depends = []
 if host_os_family == 'darwin'
   symlist = 'frida-tests.symbols'
-  extra_link_args += ['-Wl,-exported_symbols_list,' + join_paths(meson.current_source_dir(), symlist)]
+  extra_link_args += ['-Wl,-exported_symbols_list,' + meson.current_source_dir() / symlist]
   extra_link_depends += [symlist]
 elif host_os_family != 'windows'
   symscript = 'frida-tests.version'
-  extra_link_args += ['-Wl,--version-script,' + join_paths(meson.current_source_dir(), symscript)]
+  extra_link_args += ['-Wl,--version-script,' + meson.current_source_dir() / symscript]
   extra_link_depends += [symscript]
 endif
 if host_os == 'macos'
   runner_plist = 'frida-tests.plist'
-  extra_link_args += ['-Wl,-sectcreate,__TEXT,__info_plist,' + join_paths(meson.current_source_dir(), runner_plist)]
+  extra_link_args += ['-Wl,-sectcreate,__TEXT,__info_plist,' + meson.current_source_dir() / runner_plist]
   extra_link_depends += [runner_plist]
 endif
 
-runner = executable(runner_name, 'main.vala',
-  vala_args: system_vala_args,
+raw_runner = executable('frida-tests-raw', 'main.vala',
+  vala_args: [core_vala_args, system_vala_args],
   link_args: extra_link_args,
   link_depends: extra_link_depends,
   link_with: frida_tests,
   dependencies: [core_dep],
 )
 
-if host_os_family == 'darwin'
-  custom_target('frida-tests-signed',
-    input: [
-      runner,
-      'frida-tests.xcent',
-    ],
-    output: 'frida-tests',
-    command: [
-      files('sign.sh'),
-      host_os,
-      codesign,
-      '@INPUT@',
-      '@OUTPUT@',
-    ],
-    build_by_default: true,
-  )
-endif
+runner = custom_target('frida-tests',
+  input: [raw_runner, 'frida-tests.xcent'],
+  output: 'frida-tests' + exe_suffix,
+  command: post_process + ['executable', 're.frida.CoreTests', '@INPUT1@'],
+  build_by_default: true,
+)
+
+test('core', python,
+  args: [files('run.py'), runner.full_path()],
+  timeout: 120,
+  depends: [runner, labrats, test_depends],
+)

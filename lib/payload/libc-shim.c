@@ -1,4 +1,5 @@
 #define FRIDA_PRINTF_BUFFER_SIZE (512 * 1024)
+#define _GNU_SOURCE
 
 #include <errno.h>
 #include <gum/gum.h>
@@ -23,6 +24,24 @@ void
 frida_run_atexit_handlers (void)
 {
 }
+
+# ifdef HAVE_ASAN
+
+__attribute__ ((constructor)) static void
+frida_init_memory (void)
+{
+  asm volatile ("");
+}
+
+#  ifndef HAVE_DARWIN
+__attribute__ ((destructor)) static void
+frida_deinit_memory (void)
+{
+  asm volatile ("");
+}
+#  endif
+
+# endif
 
 #else
 

@@ -20,7 +20,8 @@ namespace Frida {
 		protected delegate void DispatchWorker ();
 		protected delegate void LaunchCompletionHandler (owned StdioPipes? pipes, owned Error? error);
 
-		public void * context;
+		private MainContext main_context;
+		public void * dispatch_context;
 
 		public Gee.HashMap<uint, void *> spawn_instances = new Gee.HashMap<uint, void *> ();
 		private Gee.HashMap<uint, OutputStream> stdin_streams = new Gee.HashMap<uint, OutputStream> ();
@@ -32,6 +33,9 @@ namespace Frida {
 		private Gee.HashMap<void *, uint> inject_cleaner_by_instance = new Gee.HashMap<void *, uint> ();
 		private Gee.HashMap<uint, uint> inject_expiry_timers = new Gee.HashMap<uint, uint> ();
 
+		private Gee.Set<void *> instances = new Gee.HashSet<void *> ();
+		private SourceFunc? on_last_instance_destroyed = null;
+
 		public uint next_id = 1;
 
 		private PolicySoftener policy_softener;
@@ -40,7 +44,8 @@ namespace Frida {
 		private Cancellable io_cancellable = new Cancellable ();
 
 		construct {
-			_create_context ();
+			main_context = MainContext.ref_thread_default ();
+			_create_dispatch_context ();
 
 			dtrace_agent = DTraceAgent.try_open ();
 			if (dtrace_agent != null) {
@@ -63,11 +68,7 @@ namespace Frida {
 		}
 
 		~DarwinHelperBackend () {
-			foreach (var instance in spawn_instances.values)
-				_free_spawn_instance (instance);
-			foreach (var instance in inject_instances.values)
-				_free_inject_instance (instance);
-			_destroy_context ();
+			_destroy_dispatch_context ();
 		}
 
 		public async void close (Cancellable? cancellable) throws IOError {
@@ -77,10 +78,23 @@ namespace Frida {
 				pending.complete ();
 
 			foreach (var entry in inject_cleaner_by_instance.entries) {
-				_free_inject_instance (entry.key);
+				_close_inject_instance (entry.key);
 				Source.remove (entry.value);
 			}
 			inject_cleaner_by_instance.clear ();
+
+			foreach (var instance in spawn_instances.values)
+				_close_spawn_instance (instance);
+			spawn_instances.clear ();
+
+			bool any_pending = false;
+			lock (instances) {
+				any_pending = !instances.is_empty;
+				if (any_pending)
+					on_last_instance_destroyed = close.callback;
+			}
+			if (any_pending)
+				yield;
 
 			if (dtrace_agent != null) {
 				dtrace_agent.spawn_added.disconnect (on_dtrace_agent_spawn_added);
@@ -139,11 +153,11 @@ namespace Frida {
 			Error error = null;
 
 			_launch (identifier, options, (p, e) => {
-				Idle.add (() => {
+				schedule_on_frida_thread (() => {
 					pipes = p;
 					error = e;
 					launch.callback ();
-					return false;
+					return Source.REMOVE;
 				});
 			});
 
@@ -187,7 +201,7 @@ namespace Frida {
 				inject_cleaner_by_instance.unset (instance, out source_id);
 				Source.remove (source_id);
 
-				_free_inject_instance (instance);
+				_close_inject_instance (instance);
 			}
 
 			policy_softener.forget (pid);
@@ -205,7 +219,7 @@ namespace Frida {
 
 			void * instance;
 			if (spawn_instances.unset (pid, out instance))
-				_free_spawn_instance (instance);
+				_close_spawn_instance (instance);
 
 			child_dead (pid);
 		}
@@ -293,7 +307,7 @@ namespace Frida {
 				void * instance;
 				if (spawn_instances.unset (pid, out instance)) {
 					_resume_spawn_instance (instance);
-					_free_spawn_instance (instance);
+					_close_spawn_instance (instance);
 				} else {
 					resume_with_validation (pid);
 				}
@@ -412,7 +426,7 @@ namespace Frida {
 					} catch (GLib.Error e) {
 						if (instance_created_here) {
 							spawn_instances.unset (pid);
-							_free_spawn_instance (spawn_instance);
+							_close_spawn_instance (spawn_instance);
 						}
 
 						throw_api_error (e);
@@ -495,21 +509,21 @@ namespace Frida {
 		}
 
 		public void _on_spawn_instance_ready (uint pid) {
-			Idle.add (() => {
+			schedule_on_frida_thread (() => {
 				spawn_instance_ready (pid);
-				return false;
+				return Source.REMOVE;
 			});
 		}
 
 		public void _on_spawn_instance_error (uint pid, Error error) {
-			Idle.add (() => {
+			schedule_on_frida_thread (() => {
 				spawn_instance_error (pid, error);
-				return false;
+				return Source.REMOVE;
 			});
 		}
 
 		public void _on_mach_thread_dead (uint id, void * posix_thread) {
-			Idle.add (() => {
+			schedule_on_frida_thread (() => {
 				var instance = inject_instances[id];
 				assert (instance != null);
 
@@ -518,14 +532,14 @@ namespace Frida {
 				else
 					_destroy_inject_instance (id);
 
-				return false;
+				return Source.REMOVE;
 			});
 		}
 
 		public void _on_posix_thread_dead (uint id) {
-			Idle.add (() => {
+			schedule_on_frida_thread (() => {
 				_destroy_inject_instance (id);
-				return false;
+				return Source.REMOVE;
 			});
 		}
 
@@ -545,7 +559,7 @@ namespace Frida {
 		private void schedule_inject_instance_cleanup (void * instance) {
 			var cleanup_source = new TimeoutSource (50);
 			cleanup_source.set_callback (() => {
-				_free_inject_instance (instance);
+				_close_inject_instance (instance);
 
 				var removed = inject_cleaner_by_instance.unset (instance);
 				assert (removed);
@@ -601,6 +615,19 @@ namespace Frida {
 			policy_softener.forget (pid);
 		}
 
+		public void _on_instance_created (void * instance) {
+			lock (instances)
+				instances.add (instance);
+		}
+
+		public void _on_instance_destroyed (void * instance) {
+			lock (instances) {
+				instances.remove (instance);
+				if (on_last_instance_destroyed != null && instances.is_empty)
+					schedule_on_frida_thread ((owned) on_last_instance_destroyed);
+			}
+		}
+
 		private void on_dtrace_agent_spawn_added (HostSpawnInfo info) {
 			spawn_added (info);
 		}
@@ -611,9 +638,15 @@ namespace Frida {
 
 		private async void flush_dispatch_queue () {
 			_schedule_on_dispatch_queue (() => {
-				Idle.add (flush_dispatch_queue.callback);
+				schedule_on_frida_thread (flush_dispatch_queue.callback);
 			});
 			yield;
+		}
+
+		private void schedule_on_frida_thread (owned SourceFunc function) {
+			var source = new IdleSource ();
+			source.set_callback ((owned) function);
+			source.attach (main_context);
 		}
 
 		public extern static PipeEndpoints make_pipe_endpoints (uint local_task, uint remote_pid, uint remote_task) throws Error;
@@ -626,8 +659,8 @@ namespace Frida {
 		public extern static bool is_mmap_available ();
 		public extern static MappedLibraryBlob mmap (uint task, Bytes blob) throws Error;
 
-		protected extern void _create_context ();
-		protected extern void _destroy_context ();
+		protected extern void _create_dispatch_context ();
+		protected extern void _destroy_dispatch_context ();
 		protected extern void _schedule_on_dispatch_queue (DispatchWorker worker);
 
 		protected extern uint _spawn (string path, HostSpawnOptions options, out StdioPipes? pipes) throws Error;
@@ -642,7 +675,7 @@ namespace Frida {
 		protected extern void * _create_spawn_instance (uint pid);
 		protected extern void _prepare_spawn_instance_for_injection (void * instance, uint task) throws Error;
 		protected extern void _resume_spawn_instance (void * instance);
-		protected extern void _free_spawn_instance (void * instance);
+		protected extern void _close_spawn_instance (void * instance);
 
 		protected extern uint _inject_into_task (uint pid, uint task, string path_or_name, MappedLibraryBlob? blob, string entrypoint, string data) throws Error;
 		protected extern void _demonitor (void * instance);
@@ -650,10 +683,10 @@ namespace Frida {
 		protected extern void _recreate_injectee_thread (void * instance, uint pid, uint task) throws Error;
 		protected extern void _join_inject_instance_posix_thread (void * instance, void * posix_thread);
 		protected extern uint _get_pid_of_inject_instance (void * instance);
-		protected extern void _free_inject_instance (void * instance);
+		protected extern void _close_inject_instance (void * instance);
 	}
 
-	public class DTraceAgent : Object {
+	public sealed class DTraceAgent : Object {
 		public signal void spawn_added (HostSpawnInfo info);
 		public signal void spawn_removed (HostSpawnInfo info);
 
@@ -812,7 +845,7 @@ namespace Frida {
 		}
 	}
 
-	private class PendingLaunch : Object {
+	private sealed class PendingLaunch : Object {
 		public signal void completed ();
 
 		public string identifier {
@@ -856,7 +889,7 @@ namespace Frida {
 		}
 	}
 
-	public class StdioPipes : Object {
+	public sealed class StdioPipes : Object {
 		public int input {
 			get;
 			construct;
