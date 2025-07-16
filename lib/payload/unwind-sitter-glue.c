@@ -323,8 +323,8 @@ frida_find_vtable (void)
   address = export;
 
 #ifdef HAVE_ARM64
-  cs_arch_register_arm64 ();
-  err = cs_open (CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN, &capstone);
+  cs_arch_register_aarch64 ();
+  err = cs_open (CS_ARCH_AARCH64, CS_MODE_LITTLE_ENDIAN, &capstone);
 #else
   cs_arch_register_x86 ();
   err = cs_open (CS_ARCH_X86, CS_MODE_64, &capstone);
@@ -349,21 +349,21 @@ frida_find_vtable (void)
 
     while (cs_disasm_iter (capstone, &code, &size, &address, insn))
     {
-      if (insn->id == ARM64_INS_RET || insn->id == ARM64_INS_RETAA || insn->id == ARM64_INS_RETAB)
+      if (insn->id == AArch64_INS_RET || insn->id == AArch64_INS_RETAA || insn->id == AArch64_INS_RETAB)
         break;
-      if (insn->id == ARM64_INS_ADRP)
+      if (insn->id == AArch64_INS_ADRP)
       {
         if (result != 0)
           break;
-        last_adrp = (GumAddress) insn->detail->arm64.operands[1].imm;
-        last_adrp_reg = insn->detail->arm64.operands[0].reg;
+        last_adrp = (GumAddress) insn->detail->aarch64.operands[1].imm;
+        last_adrp_reg = insn->detail->aarch64.operands[0].reg;
       }
-      else if (insn->id == ARM64_INS_ADD && insn->detail->arm64.operands[0].reg == last_adrp_reg)
+      else if (insn->id == AArch64_INS_ADD && insn->detail->aarch64.operands[0].reg == last_adrp_reg)
       {
         GumAddress candidate;
         gboolean is_bss;
 
-        candidate = last_adrp + (GumAddress) insn->detail->arm64.operands[2].imm;
+        candidate = last_adrp + (GumAddress) insn->detail->aarch64.operands[2].imm;
 
         is_bss = bss_range.base_address != 0 &&
             bss_range.base_address <= candidate &&
@@ -441,8 +441,8 @@ frida_compute_vtable_shift (gpointer vtable, gssize * shift)
   uint64_t address;
   size_t size = 4;
 
-  cs_arch_register_arm64 ();
-  err = cs_open (CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN, &capstone);
+  cs_arch_register_aarch64 ();
+  err = cs_open (CS_ARCH_AARCH64, CS_MODE_LITTLE_ENDIAN, &capstone);
   g_assert (err == CS_ERR_OK);
 
   insn = cs_malloc (capstone);
@@ -451,7 +451,7 @@ frida_compute_vtable_shift (gpointer vtable, gssize * shift)
 
   if (cs_disasm_iter (capstone, &code, &size, &address, insn))
   {
-    if (insn->id == ARM64_INS_RET || insn->id == ARM64_INS_RETAA || insn->id == ARM64_INS_RETAB)
+    if (insn->id == AArch64_INS_RET || insn->id == AArch64_INS_RETAA || insn->id == AArch64_INS_RETAB)
       *shift = 0;
     else
       *shift = -2 * GLIB_SIZEOF_VOID_P;
