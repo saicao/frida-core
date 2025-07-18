@@ -16,3 +16,4 @@
 /src/linux/helpers/build/
 /src/linux/helpers/ext/
 /subprojects/*
+/build.*
